@@ -7,6 +7,19 @@ export interface Character {
   level: number;
 }
 
+// Membro da equipe (Catálogo/Criação)
+export interface TeamMember {
+  name: string;
+  base_hp: number;
+}
+
+// Estado do membro durante a partida (Vida dinâmica)
+export interface TeamMemberState {
+  name: string;
+  current_hp: number;
+  max_hp: number;
+}
+
 export interface GameCharacter {
   id: string;
   name: string;
@@ -15,6 +28,11 @@ export interface GameCharacter {
   image_url?: string;
   created_by?: string;
   base_hp: number;
+  
+  // Novos campos para Categorias e Equipe
+  category?: 'individual' | 'equipe' | 'hit';
+  unit_count?: number; 
+  team_members?: TeamMember[]; 
 }
 
 export interface UserRosterItem {
@@ -42,34 +60,10 @@ export interface Room {
   host_id: string;
   status: 'waiting' | 'selecting' | 'playing';
   selected_event_id?: string;
-  current_turn_participant_id?: string; // O erro vermelho some aqui
-}
-
-export interface RoomParticipant {
-  id: string;
-  room_code: string;
-  user_id: string;
-  user_email: string;
-  username: string;
-  selected_character_id?: string;
-  is_ready: boolean;
-  current_hp: number;
-  max_hp: number;
-  buffs?: string;
-  debuffs?: string;
-  turn_order?: number;
-}
-
-// src/types/rpg.ts
-// ... (mantenha o resto igual)
-
-export interface CharacterSkill {
-  id: string;
-  character_id: string;
-  name: string;
-  description: string;
-  type: 'active' | 'passive' | 'transformation';
-  cost?: string;
+  current_turn_participant_id?: string;
+  
+  // Controle de Fases
+  turn_phase?: 'initial' | 'main' | 'end'; 
 }
 
 export interface CharacterSkill {
@@ -79,10 +73,9 @@ export interface CharacterSkill {
   description: string;
   type: 'active' | 'passive' | 'transformation';
   cost?: string;
-  duration?: number; // <--- NOVO: Duração padrão em rodadas
+  duration?: number; 
 }
 
-// Estrutura do objeto dentro do JSON de transformações ativas
 export interface ActiveTransformation {
   name: string;
   rounds_left: number;
@@ -112,13 +105,21 @@ export interface RoomParticipant {
   username: string;
   selected_character_id?: string;
   is_ready: boolean;
+  
+  // Status Principal
   current_hp: number;
   max_hp: number;
-  buffs?: string;   // (Pode manter por compatibilidade, mas vamos usar os novos)
-  debuffs?: string; // (Pode manter por compatibilidade, mas vamos usar os novos)
-  active_buffs?: ActiveStatusEffect[];   // <--- NOVO
-  active_debuffs?: ActiveStatusEffect[]; // <--- NOVO
-  turn_order?: number;
+  
+  // Efeitos (Legado e Novo Sistema)
+  buffs?: string;   
+  debuffs?: string; 
+  active_buffs?: ActiveStatusEffect[];   
+  active_debuffs?: ActiveStatusEffect[]; 
   active_transformations?: ActiveTransformation[];
-}
 
+  turn_order?: number;
+
+  // Estado da Equipe em Jogo
+  team_state?: TeamMemberState[]; 
+  active_member_name?: string; // Nome do membro que está lutando agora
+}
