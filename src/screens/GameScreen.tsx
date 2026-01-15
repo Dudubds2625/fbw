@@ -5,7 +5,7 @@ import {
   Alert, Image, ActivityIndicator, Modal, FlatList 
 } from 'react-native';
 import { supabase } from '../lib/supabase';
-import { Room, RoomParticipant, GameCharacter, GameEvent, CharacterSkill, ActiveTransformation, StatusEffect, ActiveStatusEffect, TeamMember, TeamMemberState } from '../types/rpg';
+import { Room, RoomParticipant, GameCharacter, GameEvent, CharacterSkill, ActiveTransformation, StatusEffect, ActiveStatusEffect, TeamMember, TeamMemberState, MatchHistoryItem } from '../types/rpg';
 import { Ionicons } from '@expo/vector-icons';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
@@ -80,6 +80,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     }
   }, [myParticipant, charactersMap, initialCheckDone]);
 
+  // DETECTAR VITÓRIA
   useEffect(() => {
       if (!participants || participants.length === 0 || !myParticipant) return;
       const survivors = participants.filter(p => p.current_hp > 0);
@@ -91,31 +92,43 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
   const handleConfirmVictory = async () => {
       if (!myParticipant || !room) return;
-      const myChar = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
+      const myCharId = myParticipant.selected_character_id;
+      const myChar = myCharId ? charactersMap[myCharId] : null;
       
       try {
-          // CALCULA DURAÇÃO
           const createdTime = new Date(room.created_at).getTime();
           const endTime = new Date().getTime();
           const durationSeconds = Math.floor((endTime - createdTime) / 1000);
 
-          // SALVA NA TABELA SIMPLES
+          // 1. SALVAR VITÓRIA COM USER_ID (IMPORTANTE PARA CONTAGEM)
           await supabase.from('victories').insert({ 
+              user_id: userId, // <--- ADICIONADO AQUI
               character_name: myChar?.name || myParticipant.username, 
               session_name: roomCode, 
-              victory_date: new Date().toISOString() 
+              victory_date: new Date().toISOString()
           });
 
-          // SALVA NO HISTÓRICO DETALHADO
+          // 2. SALVAR HISTÓRICO
           await supabase.from('match_history').insert({
               room_code: roomCode,
               winner_name: myParticipant.username,
               winner_character: myChar?.name || 'Desconhecido',
               duration_seconds: durationSeconds,
-              participants_snapshot: participants // Salva o estado final de todos
+              participants_snapshot: participants 
           });
 
-          showCustomAlert("🏆 Lenda!", "Vitória registrada no histórico.", 'victory', handleLeaveRoom);
+          // 3. SUBIR NÍVEL
+          if (myCharId) {
+              const { error: levelError } = await supabase.rpc('increment_char_level', { uid: userId, char_id: myCharId });
+              if (levelError) {
+                  const { data: roster } = await supabase.from('user_roster').select('current_level').eq('user_id', userId).eq('character_id', myCharId).single();
+                  if (roster) {
+                      await supabase.from('user_roster').update({ current_level: roster.current_level + 1 }).eq('user_id', userId).eq('character_id', myCharId);
+                  }
+              }
+          }
+
+          showCustomAlert("🏆 Lenda!", "Vitória registrada! Nível Subiu!", 'victory', handleLeaveRoom);
       } catch (error: any) { showCustomAlert("Erro", error.message); }
   };
 
@@ -642,6 +655,7 @@ const styles = StyleSheet.create({
   skillsButton: { flexDirection:'row', backgroundColor:'#333', padding:15, borderRadius:8, alignItems:'center', justifyContent:'center', marginVertical:10, borderWidth:1, borderColor:'#FFD700' },
   skillsButtonText: { color:'#FFD700', fontWeight:'bold', fontSize:14 },
   
+  // ESTILOS NOVOS DOS MODAIS
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding:20 },
   styledModalContent: { backgroundColor: '#18181B', borderRadius: 24, padding: 20, maxHeight: '80%', borderWidth: 1, shadowColor: "#000", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.5, shadowRadius: 10, elevation: 20 },
   styledModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems:'center', marginBottom: 20, paddingBottom: 15, borderBottomWidth: 1, borderBottomColor: '#333' },

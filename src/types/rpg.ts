@@ -36,7 +36,11 @@ export interface GameCharacter {
 
 export interface UserRosterItem {
   id: string;
+  user_id: string;
+  character_id: string;
   current_level: number;
+  acquired_at: string;
+  challenge_completed?: boolean; // NOVO
   game_characters: GameCharacter;
 }
 
@@ -45,6 +49,7 @@ export interface Victory {
   character_name: string;
   session_name: string;
   victory_date: string;
+  mission_completed?: boolean; // NOVO
 }
 
 export interface GameEvent {

@@ -33,9 +33,13 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
   const [victories, setVictories] = useState<Victory[]>([]);
   
-  // NOVO: DADOS DO HISTÓRICO
+  // DADOS DO HISTÓRICO
   const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
+
+  // ESTATÍSTICAS DETALHADAS
+  const [selectedCharStats, setSelectedCharStats] = useState({ matches: 0, wins: 0, winRate: 0, missions: 0 });
+  const [loadingStats, setLoadingStats] = useState(false);
 
   const [userEmail, setUserEmail] = useState('');
   const [username, setUsername] = useState(''); 
@@ -111,7 +115,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
           const { data: profile } = await supabase.from('profiles').select('username').eq('id', user.id).single();
           setUsername(profile?.username || user.email?.split('@')[0] || 'Viajante');
       }
-      const { data: roster } = await supabase.from('user_roster').select(`id, current_level, game_characters (id, name, anime_origin, base_class, image_url, base_hp, base_shield, category, unit_count, team_members)`).order('acquired_at', { ascending: false });
+      const { data: roster } = await supabase.from('user_roster').select(`id, current_level, acquired_at, challenge_completed, game_characters (id, name, anime_origin, base_class, image_url, base_hp, base_shield, category, unit_count, team_members)`).order('acquired_at', { ascending: false });
       setPlayedCharacters(roster as any || []);
       const { data: vict } = await supabase.from('victories').select('*');
       setVictories(vict || []);
@@ -135,6 +139,59 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       if (data) setMatchHistory(data);
       setLoading(false);
       setHistoryModalVisible(true);
+  };
+
+  // --- TOGGLE CHALLENGE ---
+  const handleToggleChallenge = async (item: UserRosterItem) => {
+      const newValue = !item.challenge_completed;
+      setPlayedCharacters(prev => prev.map(p => p.id === item.id ? { ...p, challenge_completed: newValue } : p));
+      if (selectedCharacter && selectedCharacter.id === item.id) {
+          setSelectedCharacter({ ...selectedCharacter, challenge_completed: newValue });
+      }
+      await supabase.from('user_roster').update({ challenge_completed: newValue }).eq('id', item.id);
+  };
+
+  // --- ESTATÍSTICAS DETALHADAS ---
+  const handleOpenDetails = async (item: UserRosterItem) => {
+      setSelectedCharacter(item);
+      setLoadingStats(true);
+      setDetailsModalVisible(true);
+
+      // 1. Contar Vitórias (Filtra por user_id e nome do personagem)
+      const { count: winsCount } = await supabase
+          .from('victories')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .eq('character_name', item.game_characters.name);
+      
+      const charWins = winsCount || 0;
+      
+      // 2. Contar Missões Completas (Se necessário no futuro, por enquanto o desafio é manual)
+      // Mantive a lógica simples, mas se tiver missões no victories, filtra igual:
+      // .eq('mission_completed', true);
+
+      // 3. Contar Partidas Jogadas
+      const { data: allHistory } = await supabase.from('match_history').select('participants_snapshot');
+      let charMatches = 0;
+      if (allHistory) {
+          allHistory.forEach(match => {
+              const played = match.participants_snapshot.some((p: any) => 
+                  p.user_id === userId && p.selected_character_id === item.game_characters.id
+              );
+              if (played) charMatches++;
+          });
+      }
+
+      if (charMatches < charWins) charMatches = charWins;
+      const rate = charMatches > 0 ? Math.round((charWins / charMatches) * 100) : 0;
+
+      setSelectedCharStats({
+          wins: charWins,
+          matches: charMatches,
+          winRate: rate,
+          missions: 0 // Placeholder se não estiver usando missões de evento no perfil
+      });
+      setLoadingStats(false);
   };
 
   useEffect(() => { fetchData(); }, []);
@@ -184,9 +241,11 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const handleCreateRoom = async () => {
     const code = generateRoomCode();
     const { error } = await supabase.from('rooms').insert({ code, host_id: userId, status: 'waiting' });
-    if (error) return Alert.alert('Erro', 'Não foi possível criar a sala.');
+    if (error) return Alert.alert('Erro', 'Não foi possível criar a sala. Verifique a conexão.');
+    
     await supabase.from('room_participants').insert({ room_code: code, user_id: userId, user_email: userEmail, username });
-    setCurrentRoom({ code, host_id: userId, status: 'waiting', created_at: new Date().toISOString() }); // Add fake created_at for local state
+    setCurrentRoom({ code, host_id: userId, status: 'waiting', created_at: new Date().toISOString() });
+    
     setParticipants([{ id: 'local', room_code: code, user_id: userId, user_email: userEmail, username, is_ready: false, current_hp: 10, max_hp: 10 }]);
     subscribeToRoom(code);
     setLobbyModalVisible(true);
@@ -331,13 +390,14 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const getCategoryColor = (cat?: string) => { switch(cat) { case 'equipe': return '#FFD700'; case 'hit': return '#ff4444'; default: return '#00B37E'; } };
   const formatDuration = (seconds: number) => { const mins = Math.floor(seconds / 60); const secs = seconds % 60; return `${mins}m ${secs}s`; };
 
+  // --- RENDERIZAR CARD DO HISTÓRICO LOCAL ---
   const renderPlayedChar = (item: UserRosterItem) => ( 
-    <TouchableOpacity key={item.id} style={styles.card} onPress={() => { setSelectedCharacter(item); setDetailsModalVisible(true); }}> 
+    <TouchableOpacity key={item.id} style={styles.card} onPress={() => handleOpenDetails(item)}> 
         {item.game_characters.image_url ? <Image source={{ uri: item.game_characters.image_url }} style={styles.charImage} /> : <View style={[styles.charIcon, { backgroundColor: '#3e2e6b' }]}><Text style={{fontSize: 20}}>⚔️</Text></View>} 
         <View style={{flex: 1}}> 
             <Text style={styles.cardTitle}>{item.game_characters.name}</Text> 
             <View style={{flexDirection:'row', alignItems:'center'}}> 
-                <Text style={styles.cardSubtitle}>Nível {1 + victories.filter(v => v.character_name === item.game_characters.name).length} • {item.game_characters.base_class}</Text> 
+                <Text style={styles.cardSubtitle}>Nível {item.current_level} • {item.game_characters.base_class}</Text> 
                 <View style={{marginLeft: 8, paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getCategoryColor(item.game_characters.category), opacity: 0.8}}> 
                     <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{item.game_characters.category?.toUpperCase() || 'IND.'}</Text> 
                 </View> 
@@ -675,25 +735,56 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
           </View>
       </Modal>
 
-      {/* DETAILS MODAL */}
+      {/* DETAILS MODAL ATUALIZADO */}
       <Modal animationType="fade" transparent={true} visible={detailsModalVisible} onRequestClose={() => setDetailsModalVisible(false)}>
           <View style={styles.modalOverlay}>
-              <View style={[styles.modalContent, { height: '60%' }]}>
-                  {selectedCharacter && (
+              <View style={[styles.modalContent, { height: '65%' }]}>
+                  {selectedCharacter ? (
                       <View style={{alignItems: 'center'}}>
                           {selectedCharacter.game_characters.image_url ? <Image source={{uri: selectedCharacter.game_characters.image_url}} style={styles.detailsImageBig} /> : <View style={styles.detailsIconBig}><Text style={{fontSize: 40}}>👤</Text></View>}
                           <Text style={styles.detailsTitle}>{selectedCharacter.game_characters.name}</Text>
                           <Text style={styles.detailsClass}>{selectedCharacter.game_characters.base_class}</Text>
                           <Text style={[styles.detailsClass, {color: getCategoryColor(selectedCharacter.game_characters.category), marginTop:5}]}>{selectedCharacter.game_characters.category?.toUpperCase() || 'INDIVIDUAL'}</Text>
+                          
                           <View style={styles.levelBigBadge}>
                               <Text style={styles.levelLabel}>HP BASE: {selectedCharacter.game_characters.base_hp}</Text>
                               {(selectedCharacter.game_characters.base_shield || 0) > 0 && <Text style={[styles.levelLabel, {color:'#44aaff', marginTop:5}]}>ESCUDO: {selectedCharacter.game_characters.base_shield}</Text>}
                           </View>
+
+                          {/* --- NOVA SEÇÃO DE ESTATÍSTICAS --- */}
+                          <View style={styles.statsRow}>
+                              <View style={styles.statBox}>
+                                  <Ionicons name="trophy" size={24} color="#FFD700" />
+                                  <Text style={styles.statValue}>{selectedCharStats.wins}</Text>
+                                  <Text style={styles.statLabel}>Vitórias (Lv)</Text>
+                              </View>
+                              <View style={styles.statBox}>
+                                  <Ionicons name="game-controller" size={24} color="#ccc" />
+                                  <Text style={styles.statValue}>{selectedCharStats.matches}</Text>
+                                  <Text style={styles.statLabel}>Partidas</Text>
+                              </View>
+                              <View style={styles.statBox}>
+                                  <Ionicons name="pie-chart" size={24} color="#8257e5" />
+                                  <Text style={styles.statValue}>{selectedCharStats.winRate}%</Text>
+                                  <Text style={styles.statLabel}>Taxa</Text>
+                              </View>
+                          </View>
+
+                          {/* --- NOVO: CHECKBOX DE DESAFIO DO PERSONAGEM --- */}
+                          <View style={{flexDirection:'row', alignItems:'center', marginTop:20, backgroundColor:'#222', padding:10, borderRadius:8, width:'100%'}}>
+                              <Text style={{color:'#fff', flex:1, fontSize:14, marginRight:10}}>Desafio do Personagem Concluído?</Text>
+                              <TouchableOpacity onPress={() => handleToggleChallenge(selectedCharacter)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: selectedCharacter.challenge_completed ? '#00B37E' : 'transparent'}}>
+                                  {selectedCharacter.challenge_completed && <Ionicons name="checkmark" size={18} color="#fff" />}
+                              </TouchableOpacity>
+                          </View>
+
+                          {loadingStats && <ActivityIndicator size="small" color="#8257e5" style={{marginTop:10}}/>}
+
                           <TouchableOpacity style={styles.closeButton} onPress={() => setDetailsModalVisible(false)}>
                               <Text style={styles.closeButtonText}>Fechar</Text>
                           </TouchableOpacity>
                       </View>
-                  )}
+                  ) : <ActivityIndicator size="large" color="#8257e5"/>}
               </View>
           </View>
       </Modal>
@@ -755,7 +846,7 @@ const styles = StyleSheet.create({
   levelBigBadge: { marginTop: 20, alignItems: 'center', backgroundColor: '#3e2e6b', paddingVertical: 10, paddingHorizontal: 30, borderRadius: 12 },
   levelLabel: { color: '#D8B4FE', fontSize: 12, fontWeight: 'bold' },
   levelValue: { color: '#fff', fontSize: 36, fontWeight: 'bold' },
-  closeButton: { backgroundColor: '#333', padding: 15, borderRadius: 8, marginTop: 30, width: '100%', alignItems: 'center' },
+  closeButton: { backgroundColor: '#333', padding: 15, borderRadius: 8, marginTop: 20, width: '100%', alignItems: 'center' },
   closeButtonText: { color: '#fff' },
   sectionHeader: { color:'#8257e5', fontWeight:'bold', fontSize:12, marginBottom:10, letterSpacing:1 },
   skillForm: { backgroundColor:'#202024', padding:10, borderRadius:8 },
@@ -765,5 +856,11 @@ const styles = StyleSheet.create({
   imagePickerBtn: { width:'100%', height:150, backgroundColor:'#222', borderRadius:8, alignItems:'center', justifyContent:'center', borderStyle:'dashed', borderWidth:1, borderColor:'#555', marginBottom:20 },
   imagePreview: { width:'100%', height:'100%', borderRadius:8, resizeMode:'cover' },
   
-  historyCard: { backgroundColor: '#202024', padding: 15, borderRadius: 12, marginBottom: 15, borderLeftWidth: 4, borderLeftColor: '#FFD700' }
+  historyCard: { backgroundColor: '#202024', padding: 15, borderRadius: 12, marginBottom: 15, borderLeftWidth: 4, borderLeftColor: '#FFD700' },
+  
+  // ESTILOS DE ESTATÍSTICAS
+  statsRow: { flexDirection:'row', justifyContent:'space-around', width:'100%', marginTop:25 },
+  statBox: { alignItems:'center', backgroundColor:'#222', padding:10, borderRadius:8, width:'30%' },
+  statValue: { color:'#fff', fontWeight:'bold', fontSize:18, marginTop:5 },
+  statLabel: { color:'#777', fontSize:10 }
 });
