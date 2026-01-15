@@ -5,15 +5,13 @@ import {
   RefreshControl, Alert, Modal, FlatList, TextInput, Image, KeyboardAvoidingView, Platform, ActivityIndicator 
 } from 'react-native';
 import { supabase } from '../lib/supabase';
-// IMPORTANTE: Adicionei TeamMember e TeamMemberState nos imports
-import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, TeamMemberState } from '../types/rpg';
+import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, TeamMemberState, MatchHistoryItem } from '../types/rpg';
 import { Ionicons } from '@expo/vector-icons'; 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker'; 
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer'; 
 
-// --- PROPS ---
 interface HomeScreenProps {
   onStartGame: (roomCode: string) => void;
 }
@@ -35,6 +33,10 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
   const [victories, setVictories] = useState<Victory[]>([]);
   
+  // NOVO: DADOS DO HISTÓRICO
+  const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
+  const [historyModalVisible, setHistoryModalVisible] = useState(false);
+
   const [userEmail, setUserEmail] = useState('');
   const [username, setUsername] = useState(''); 
   const [userId, setUserId] = useState('');
@@ -49,50 +51,47 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [joinCode, setJoinCode] = useState(''); 
   const roomChannelRef = useRef<RealtimeChannel | null>(null);
 
-  // --- MODAIS DE GERENCIAMENTO ---
+  // --- MODAIS ---
   const [createCharModalVisible, setCreateCharModalVisible] = useState(false);
   const [manageEventsModalVisible, setManageEventsModalVisible] = useState(false);
   const [createEventModalVisible, setCreateEventModalVisible] = useState(false);
-  
   const [manageEffectsModalVisible, setManageEffectsModalVisible] = useState(false);
   const [createEffectModalVisible, setCreateEffectModalVisible] = useState(false);
-
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
   const [selectedCharacter, setSelectedCharacter] = useState<UserRosterItem | null>(null);
 
-  // --- FORMULÁRIO PERSONAGEM (DADOS BÁSICOS) ---
+  // --- FORMULÁRIO PERSONAGEM ---
   const [editingCharId, setEditingCharId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newOrigin, setNewOrigin] = useState('');
   const [newClass, setNewClass] = useState('');
   const [newCategory, setNewCategory] = useState<'individual' | 'equipe' | 'hit'>('individual');
-  
-  // INPUTS DE VIDA
   const [hpInput1, setHpInput1] = useState('10'); 
+  
+  const [hasShield, setHasShield] = useState(false);
+  const [shieldInput, setShieldInput] = useState('0');
+
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [memberName, setMemberName] = useState('');
   const [memberHp, setMemberHp] = useState('');
-
-  // IMAGEM
   const [newImage, setNewImage] = useState(''); 
   const [pickedImageUri, setPickedImageUri] = useState(''); 
   const [uploadingImage, setUploadingImage] = useState(false);
-
-  // --- FORMULÁRIO PERSONAGEM (SKILLS) ---
+  
   const [tempSkills, setTempSkills] = useState<Partial<CharacterSkill>[]>([]);
   const [skillName, setSkillName] = useState('');
   const [skillDesc, setSkillDesc] = useState('');
   const [skillCost, setSkillCost] = useState('');
   const [skillDuration, setSkillDuration] = useState(''); 
   const [skillType, setSkillType] = useState<'active' | 'passive' | 'transformation'>('active');
+  const [skillGeneratesShield, setSkillGeneratesShield] = useState(false);
+  const [skillShieldValue, setSkillShieldValue] = useState('');
 
-  // --- FORMULÁRIO EVENTO ---
+  // --- FORMULÁRIO EVENTO/EFEITO ---
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [newEventTitle, setNewEventTitle] = useState('');
   const [newEventDesc, setNewEventDesc] = useState('');
   const [newEventImage, setNewEventImage] = useState('');
-
-  // --- FORMULÁRIO EFEITOS (BUFF/DEBUFF) ---
   const [editingEffectId, setEditingEffectId] = useState<string | null>(null);
   const [effectTitle, setEffectTitle] = useState('');
   const [effectDesc, setEffectDesc] = useState('');
@@ -102,7 +101,6 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
 
   const [saving, setSaving] = useState(false);
 
-  // --- FETCH DATA ---
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
@@ -113,7 +111,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
           const { data: profile } = await supabase.from('profiles').select('username').eq('id', user.id).single();
           setUsername(profile?.username || user.email?.split('@')[0] || 'Viajante');
       }
-      const { data: roster } = await supabase.from('user_roster').select(`id, current_level, game_characters (id, name, anime_origin, base_class, image_url, base_hp, category, unit_count, team_members)`).order('acquired_at', { ascending: false });
+      const { data: roster } = await supabase.from('user_roster').select(`id, current_level, game_characters (id, name, anime_origin, base_class, image_url, base_hp, base_shield, category, unit_count, team_members)`).order('acquired_at', { ascending: false });
       setPlayedCharacters(roster as any || []);
       const { data: vict } = await supabase.from('victories').select('*');
       setVictories(vict || []);
@@ -131,9 +129,16 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     if (effects) setCatalogEffects(effects);
   };
 
+  const fetchHistory = async () => {
+      setLoading(true);
+      const { data } = await supabase.from('match_history').select('*').order('played_at', { ascending: false }).limit(10);
+      if (data) setMatchHistory(data);
+      setLoading(false);
+      setHistoryModalVisible(true);
+  };
+
   useEffect(() => { fetchData(); }, []);
 
-  // --- LOGICA DE IMAGEM ---
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1, 1], quality: 0.5 });
     if (!result.canceled) setPickedImageUri(result.assets[0].uri);
@@ -157,7 +162,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     } finally { setUploadingImage(false); }
   };
 
-  // --- MULTIPLAYER LOGIC ---
+  // --- LOGICA DA SALA ---
   const subscribeToRoom = (roomCode: string) => {
     if (roomChannelRef.current) supabase.removeChannel(roomChannelRef.current);
     const channel = supabase.channel(`room_${roomCode}`)
@@ -179,9 +184,9 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const handleCreateRoom = async () => {
     const code = generateRoomCode();
     const { error } = await supabase.from('rooms').insert({ code, host_id: userId, status: 'waiting' });
-    if (error) return Alert.alert('Erro', 'Tente novamente.');
+    if (error) return Alert.alert('Erro', 'Não foi possível criar a sala.');
     await supabase.from('room_participants').insert({ room_code: code, user_id: userId, user_email: userEmail, username });
-    setCurrentRoom({ code, host_id: userId, status: 'waiting' });
+    setCurrentRoom({ code, host_id: userId, status: 'waiting', created_at: new Date().toISOString() }); // Add fake created_at for local state
     setParticipants([{ id: 'local', room_code: code, user_id: userId, user_email: userEmail, username, is_ready: false, current_hp: 10, max_hp: 10 }]);
     subscribeToRoom(code);
     setLobbyModalVisible(true);
@@ -215,7 +220,6 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     }
   };
 
-  // --- START GAME (CORRIGIDO PARA INICIAR EQUIPE ZERADA) ---
   const handleStartGame = async () => {
     if (!currentRoom) return;
     let availableEvents = catalogEvents;
@@ -237,10 +241,9 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
             const charData = catalogChars.find(c => c.id === selectedCharId);
             
             let initialHp = 10;
+            let initialShield = charData?.base_shield || 0;
             let initialTeamState: TeamMemberState[] = [];
 
-            // --- CORREÇÃO AQUI ---
-            // Se for Equipe, inicia com 0 HP e lista vazia
             if (charData?.category === 'equipe') {
                 initialHp = 0; 
                 initialTeamState = []; 
@@ -252,10 +255,11 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                 turn_order: i + 1, 
                 current_hp: initialHp, 
                 max_hp: initialHp, 
+                current_shield: initialShield,
                 buffs: '', 
                 debuffs: '',
                 active_transformations: [],
-                team_state: initialTeamState, // Salva como [] no início
+                team_state: initialTeamState, 
                 active_member_name: null      
             }).eq('id', shuffled[i].id);
         }
@@ -276,6 +280,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     setEditingCharId(null);
     setNewName(''); setNewOrigin(''); setNewClass(''); setNewImage(''); 
     setHpInput1('10'); setNewCategory('individual'); setTeamMembers([]); setMemberName(''); setMemberHp('');
+    setHasShield(false); setShieldInput('0');
     setPickedImageUri(''); setTempSkills([]); setCreateCharModalVisible(true);
   };
 
@@ -283,135 +288,222 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     setEditingCharId(char.id);
     setNewName(char.name); setNewOrigin(char.anime_origin); setNewClass(char.base_class); setNewImage(char.image_url || ''); setPickedImageUri(''); 
     setNewCategory(char.category || 'individual');
-    if (char.category === 'equipe') {
-        setTeamMembers(char.team_members || []);
-        setHpInput1('0'); // Visual
-    } else {
-        setHpInput1(String(char.base_hp));
-    }
+    if (char.category === 'equipe') { setTeamMembers(char.team_members || []); setHpInput1('0'); } else { setHpInput1(String(char.base_hp)); }
+    setHasShield((char.base_shield || 0) > 0);
+    setShieldInput(String(char.base_shield || 0));
     const { data: skills } = await supabase.from('character_skills').select('*').eq('character_id', char.id);
-    if(skills) {
-        setTempSkills(skills.map(s => ({ name: s.name, description: s.description, type: s.type as any, cost: s.cost || '', duration: s.duration || 0 })));
-    } else { setTempSkills([]); }
+    if(skills) { setTempSkills(skills.map(s => ({ name: s.name, description: s.description, type: s.type as any, cost: s.cost || '', duration: s.duration || 0, shield_value: s.shield_value || 0 }))); } else { setTempSkills([]); }
     setLobbyModalVisible(false); setCreateCharModalVisible(true);
   };
 
-  const addMemberToTeam = () => {
-      const hp = parseInt(memberHp);
-      if (!memberName || isNaN(hp)) { Alert.alert("Ops", "Preencha nome e vida válida."); return; }
-      setTeamMembers([...teamMembers, { name: memberName, base_hp: hp }]);
-      setMemberName(''); setMemberHp('');
-  };
-
-  const removeMemberFromTeam = (index: number) => {
-      const updated = [...teamMembers]; updated.splice(index, 1); setTeamMembers(updated);
-  };
-
-  const addSkillToTempList = () => {
-      if (!skillName) return Alert.alert("Ops", "Dê um nome para a habilidade");
-      const newSkill: Partial<CharacterSkill> = { name: skillName, description: skillDesc, cost: skillCost, type: skillType, duration: parseInt(skillDuration) || 0 };
-      setTempSkills([...tempSkills, newSkill]); setSkillName(''); setSkillDesc(''); setSkillCost(''); setSkillDuration('');
-  };
-
+  const addMemberToTeam = () => { const hp = parseInt(memberHp); if (!memberName || isNaN(hp)) { Alert.alert("Ops", "Preencha nome e vida válida."); return; } setTeamMembers([...teamMembers, { name: memberName, base_hp: hp }]); setMemberName(''); setMemberHp(''); };
+  const removeMemberFromTeam = (index: number) => { const updated = [...teamMembers]; updated.splice(index, 1); setTeamMembers(updated); };
+  const addSkillToTempList = () => { if (!skillName) return Alert.alert("Ops", "Dê um nome para a habilidade"); const newSkill: Partial<CharacterSkill> = { name: skillName, description: skillDesc, cost: skillCost, type: skillType, duration: parseInt(skillDuration) || 0, shield_value: skillGeneratesShield ? (parseInt(skillShieldValue) || 0) : 0 }; setTempSkills([...tempSkills, newSkill]); setSkillName(''); setSkillDesc(''); setSkillCost(''); setSkillDuration(''); setSkillGeneratesShield(false); setSkillShieldValue(''); };
   const removeSkillFromTemp = (index: number) => { const updated = [...tempSkills]; updated.splice(index, 1); setTempSkills(updated); };
-
-  const handleDeleteChar = async (id: string) => {
-    Alert.alert("Excluir", "Tem certeza?", [ { text: "Cancelar" }, { text: "Excluir", onPress: async () => { await supabase.from('game_characters').delete().eq('id', id); fetchCatalogs(); }}]);
-  };
-
+  const handleDeleteChar = async (id: string) => { Alert.alert("Excluir", "Tem certeza?", [ { text: "Cancelar" }, { text: "Excluir", onPress: async () => { await supabase.from('game_characters').delete().eq('id', id); fetchCatalogs(); }}]); };
+  
   const handleSaveChar = async () => {
     if(!newName || !newOrigin || !newClass) return Alert.alert("Erro", "Preencha os dados básicos");
     setSaving(true);
     try {
         let finalImageUrl = newImage; 
-        if (pickedImageUri) {
-            const uploadedUrl = await uploadToSupabase(pickedImageUri);
-            if (uploadedUrl) finalImageUrl = uploadedUrl;
-            else throw new Error("Falha no upload da imagem");
-        }
-
-        let finalHp = 10;
-        let finalUnitCount = 1;
-        
-        if (newCategory === 'equipe') {
-            finalHp = 0; // Equipe salva com 0 no catálogo, mas com membros na lista
-            finalUnitCount = teamMembers.length;
-            if (teamMembers.length === 0) return Alert.alert("Erro", "Adicione membros.");
-        } else if (newCategory === 'hit') {
-            finalHp = parseInt(hpInput1) || 1; 
-        } else {
-            finalHp = parseInt(hpInput1) || 10; 
-        }
-
-        const charPayload = {
-            name: newName, anime_origin: newOrigin, base_class: newClass, image_url: finalImageUrl || null, 
-            base_hp: finalHp, category: newCategory, unit_count: finalUnitCount,
-            team_members: newCategory === 'equipe' ? teamMembers : null
-        };
-        
+        if (pickedImageUri) { const uploadedUrl = await uploadToSupabase(pickedImageUri); if (uploadedUrl) finalImageUrl = uploadedUrl; else throw new Error("Falha no upload da imagem"); }
+        let finalHp = 10; let finalUnitCount = 1;
+        if (newCategory === 'equipe') { finalHp = 0; finalUnitCount = teamMembers.length; if (teamMembers.length === 0) return Alert.alert("Erro", "Adicione membros."); } else if (newCategory === 'hit') { finalHp = parseInt(hpInput1) || 1; } else { finalHp = parseInt(hpInput1) || 10; }
+        const charPayload = { name: newName, anime_origin: newOrigin, base_class: newClass, image_url: finalImageUrl || null, base_hp: finalHp, category: newCategory, unit_count: finalUnitCount, team_members: newCategory === 'equipe' ? teamMembers : null, base_shield: hasShield ? (parseInt(shieldInput) || 0) : 0 };
         let charId = editingCharId;
-        if(editingCharId) {
-            await supabase.from('game_characters').update(charPayload).eq('id', editingCharId);
-            await supabase.from('character_skills').delete().eq('character_id', editingCharId);
-        } else {
-            const { data, error } = await supabase.from('game_characters').insert(charPayload).select().single();
-            if (error) throw error; charId = data.id;
-        }
-
-        if (charId && tempSkills.length > 0) {
-            const skillsToInsert = tempSkills.map(s => ({ character_id: charId, name: s.name, description: s.description, type: s.type, cost: s.cost, duration: s.duration }));
-            const { error: skillError } = await supabase.from('character_skills').insert(skillsToInsert);
-            if (skillError) throw skillError;
-        }
+        if(editingCharId) { await supabase.from('game_characters').update(charPayload).eq('id', editingCharId); await supabase.from('character_skills').delete().eq('character_id', editingCharId); } else { const { data, error } = await supabase.from('game_characters').insert(charPayload).select().single(); if (error) throw error; charId = data.id; }
+        if (charId && tempSkills.length > 0) { const skillsToInsert = tempSkills.map(s => ({ character_id: charId, name: s.name, description: s.description, type: s.type, cost: s.cost, duration: s.duration, shield_value: s.shield_value })); const { error: skillError } = await supabase.from('character_skills').insert(skillsToInsert); if (skillError) throw skillError; }
         Alert.alert("Sucesso", "Personagem salvo!"); setCreateCharModalVisible(false); fetchCatalogs(); if(currentRoom) setLobbyModalVisible(true);
     } catch (e: any) { Alert.alert("Erro ao salvar", e.message); } finally { setSaving(false); setUploadingImage(false); }
   };
 
-  // --- CRUD OUTROS (Resumido) ---
+  // --- CRUD EVENTOS/EFEITOS ---
   const openCreateEventModal = () => { setEditingEventId(null); setNewEventTitle(''); setNewEventDesc(''); setNewEventImage(''); setCreateEventModalVisible(true); };
   const openEditEventModal = (ev: GameEvent) => { setEditingEventId(ev.id); setNewEventTitle(ev.title); setNewEventDesc(ev.description); setNewEventImage(ev.image_url||''); setCreateEventModalVisible(true); }
   const handleSaveEvent = async () => { if(!newEventTitle) return; const p = {title:newEventTitle, description:newEventDesc, image_url:newEventImage||null}; if(editingEventId) await supabase.from('game_events').update(p).eq('id',editingEventId); else await supabase.from('game_events').insert(p); setCreateEventModalVisible(false); fetchCatalogs(); };
   const deleteEvent = async(id:string) => { await supabase.from('game_events').delete().eq('id',id); fetchCatalogs(); }
-
   const openCreateEffectModal = () => { setEditingEffectId(null); setEffectTitle(''); setEffectDesc(''); setEffectDamage(''); setEffectDuration(''); setEffectType('buff'); setCreateEffectModalVisible(true); };
   const openEditEffectModal = (eff: StatusEffect) => { setEditingEffectId(eff.id); setEffectTitle(eff.title); setEffectDesc(eff.description); setEffectType(eff.type); setEffectDamage(eff.damage || ''); setEffectDuration(String(eff.duration || '')); setCreateEffectModalVisible(true); };
   const handleSaveEffect = async () => { if(!effectTitle) return Alert.alert("Erro", "Título é obrigatório"); const p = { title: effectTitle, description: effectDesc, type: effectType, damage: effectType === 'debuff' ? effectDamage : null, duration: parseInt(effectDuration) || 0 }; if(editingEffectId) await supabase.from('game_status_effects').update(p).eq('id', editingEffectId); else await supabase.from('game_status_effects').insert(p); setCreateEffectModalVisible(false); fetchCatalogs(); };
   const deleteEffect = async(id:string) => { await supabase.from('game_status_effects').delete().eq('id',id); fetchCatalogs(); };
-
+  
   const getCategoryColor = (cat?: string) => { switch(cat) { case 'equipe': return '#FFD700'; case 'hit': return '#ff4444'; default: return '#00B37E'; } };
+  const formatDuration = (seconds: number) => { const mins = Math.floor(seconds / 60); const secs = seconds % 60; return `${mins}m ${secs}s`; };
 
   const renderPlayedChar = (item: UserRosterItem) => ( 
     <TouchableOpacity key={item.id} style={styles.card} onPress={() => { setSelectedCharacter(item); setDetailsModalVisible(true); }}> 
         {item.game_characters.image_url ? <Image source={{ uri: item.game_characters.image_url }} style={styles.charImage} /> : <View style={[styles.charIcon, { backgroundColor: '#3e2e6b' }]}><Text style={{fontSize: 20}}>⚔️</Text></View>} 
-        <View style={{flex: 1}}>
-            <Text style={styles.cardTitle}>{item.game_characters.name}</Text>
-            <View style={{flexDirection:'row', alignItems:'center'}}>
-                <Text style={styles.cardSubtitle}>Nível {1 + victories.filter(v => v.character_name === item.game_characters.name).length} • {item.game_characters.base_class}</Text>
-                <View style={{marginLeft: 8, paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getCategoryColor(item.game_characters.category), opacity: 0.8}}>
-                    <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{item.game_characters.category?.toUpperCase() || 'IND.'}</Text>
-                </View>
-            </View>
+        <View style={{flex: 1}}> 
+            <Text style={styles.cardTitle}>{item.game_characters.name}</Text> 
+            <View style={{flexDirection:'row', alignItems:'center'}}> 
+                <Text style={styles.cardSubtitle}>Nível {1 + victories.filter(v => v.character_name === item.game_characters.name).length} • {item.game_characters.base_class}</Text> 
+                <View style={{marginLeft: 8, paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getCategoryColor(item.game_characters.category), opacity: 0.8}}> 
+                    <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{item.game_characters.category?.toUpperCase() || 'IND.'}</Text> 
+                </View> 
+            </View> 
         </View> 
     </TouchableOpacity> 
   );
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}><View><Text style={styles.greeting}>Olá, {username}</Text><Text style={styles.userEmail}>{userEmail}</Text></View><TouchableOpacity onPress={async () => await supabase.auth.signOut()} style={styles.logoutButton}><Ionicons name="log-out-outline" size={24} color="#ff4444" /></TouchableOpacity></View>
+      <View style={styles.header}>
+          <View>
+              <Text style={styles.greeting}>Olá, {username}</Text>
+              <Text style={styles.userEmail}>{userEmail}</Text>
+          </View>
+          <View style={{flexDirection:'row'}}>
+              <TouchableOpacity onPress={fetchHistory} style={[styles.logoutButton, {marginRight:10, backgroundColor:'#8257e5'}]}>
+                  <Ionicons name="time" size={24} color="#fff" />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={async () => await supabase.auth.signOut()} style={styles.logoutButton}>
+                  <Ionicons name="log-out-outline" size={24} color="#ff4444" />
+              </TouchableOpacity>
+          </View>
+      </View>
+
       <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchData(); }} tintColor="#8257e5"/>}>
-        <View style={styles.matchmakingContainer}><Text style={styles.sectionTitle}>Multiplayer</Text><TouchableOpacity style={styles.newGameButton} onPress={() => { handleCreateRoom(); fetchCatalogs(); }}><View style={styles.newGameIcon}><Ionicons name="add" size={32} color="#fff" /></View><View><Text style={styles.newGameTitle}>CRIAR SALA</Text><Text style={styles.newGameSubtitle}>Seja o Host da partida</Text></View></TouchableOpacity><View style={styles.joinContainer}><TextInput style={styles.joinInput} placeholder="CÓDIGO" placeholderTextColor="#555" maxLength={4} autoCapitalize="characters" value={joinCode} onChangeText={setJoinCode}/><TouchableOpacity style={styles.joinButton} onPress={() => { handleJoinRoom(); fetchCatalogs(); }}><Text style={styles.joinButtonText}>ENTRAR</Text></TouchableOpacity></View></View>
-        <View style={styles.actionsRow}>
-            <TouchableOpacity style={[styles.createButton, {flex: 1, marginRight: 5}]} onPress={openCreateCharModal}><Ionicons name="person-add" size={18} color="#8257e5" style={{marginRight: 5}}/><Text style={styles.createButtonText}>Add Char</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.createButton, {flex: 1, marginHorizontal: 5, borderColor: '#00B37E'}]} onPress={() => { setManageEventsModalVisible(true); fetchCatalogs(); }}><Ionicons name="library" size={18} color="#00B37E" style={{marginRight: 5}}/><Text style={[styles.createButtonText, {color: '#00B37E'}]}>Eventos</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.createButton, {flex: 1, marginLeft: 5, borderColor: '#FFD700'}]} onPress={() => { setManageEffectsModalVisible(true); fetchCatalogs(); }}><Ionicons name="flask" size={18} color="#FFD700" style={{marginRight: 5}}/><Text style={[styles.createButtonText, {color: '#FFD700'}]}>Efeitos</Text></TouchableOpacity>
+        <View style={styles.matchmakingContainer}>
+            <Text style={styles.sectionTitle}>Multiplayer</Text>
+            <TouchableOpacity style={styles.newGameButton} onPress={() => { handleCreateRoom(); fetchCatalogs(); }}>
+                <View style={styles.newGameIcon}><Ionicons name="add" size={32} color="#fff" /></View>
+                <View><Text style={styles.newGameTitle}>CRIAR SALA</Text><Text style={styles.newGameSubtitle}>Seja o Host da partida</Text></View>
+            </TouchableOpacity>
+            <View style={styles.joinContainer}>
+                <TextInput style={styles.joinInput} placeholder="CÓDIGO" placeholderTextColor="#555" maxLength={4} autoCapitalize="characters" value={joinCode} onChangeText={setJoinCode}/>
+                <TouchableOpacity style={styles.joinButton} onPress={() => { handleJoinRoom(); fetchCatalogs(); }}>
+                    <Text style={styles.joinButtonText}>ENTRAR</Text>
+                </TouchableOpacity>
+            </View>
         </View>
-        <Text style={styles.sectionTitle}>Seu Histórico</Text>{playedCharacters.length === 0 ? <Text style={styles.emptyText}>Sem histórico.</Text> : playedCharacters.map(item => renderPlayedChar(item))}
+
+        <View style={styles.actionsRow}>
+            <TouchableOpacity style={[styles.createButton, {flex: 1, marginRight: 5}]} onPress={openCreateCharModal}>
+                <Ionicons name="person-add" size={18} color="#8257e5" style={{marginRight: 5}}/>
+                <Text style={styles.createButtonText}>Add Char</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.createButton, {flex: 1, marginHorizontal: 5, borderColor: '#00B37E'}]} onPress={() => { setManageEventsModalVisible(true); fetchCatalogs(); }}>
+                <Ionicons name="library" size={18} color="#00B37E" style={{marginRight: 5}}/>
+                <Text style={[styles.createButtonText, {color: '#00B37E'}]}>Eventos</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.createButton, {flex: 1, marginLeft: 5, borderColor: '#FFD700'}]} onPress={() => { setManageEffectsModalVisible(true); fetchCatalogs(); }}>
+                <Ionicons name="flask" size={18} color="#FFD700" style={{marginRight: 5}}/>
+                <Text style={[styles.createButtonText, {color: '#FFD700'}]}>Efeitos</Text>
+            </TouchableOpacity>
+        </View>
+
+        <Text style={styles.sectionTitle}>Seu Histórico</Text>
+        {playedCharacters.length === 0 ? <Text style={styles.emptyText}>Sem histórico.</Text> : playedCharacters.map(item => renderPlayedChar(item))}
       </ScrollView>
 
-      {/* LOBBY MODAL */}
-      <Modal animationType="slide" transparent={false} visible={lobbyModalVisible} onRequestClose={()=>{}}><View style={styles.lobbyContainer}><View style={styles.lobbyHeader}><Text style={styles.lobbyTitle}>Sala: {currentRoom?.code}</Text><TouchableOpacity onPress={handleLeaveRoom}><Ionicons name="close-circle" size={32} color="#ff4444" /></TouchableOpacity></View>{currentRoom?.status === 'waiting' && (<View style={{flex: 1, justifyContent:'center', alignItems:'center'}}><Text style={styles.phaseTitle}>Aguardando...</Text><View style={styles.participantsList}>{participants.map(p => (<View key={p.id} style={styles.participantRow}><Ionicons name="person" size={20} color="#fff" /><Text style={styles.participantName}>{p.username}</Text>{p.user_id === currentRoom.host_id && <Text style={{color:'#FFD700', marginLeft:5}}>👑</Text>}</View>))}</View>{userId === currentRoom.host_id ? <TouchableOpacity style={styles.actionButton} onPress={handleStartSelection}><Text style={styles.actionButtonText}>INICIAR SELEÇÃO</Text></TouchableOpacity> : <Text style={{color:'#777'}}>Aguardando Host...</Text>}</View>)}{currentRoom?.status === 'selecting' && (<View style={{flex: 1}}><Text style={styles.phaseTitle}>Escolha seu Herói</Text><Text style={{color:'#ccc', textAlign:'center', marginBottom:10}}>{participants.filter(p => p.is_ready).length} / {participants.length} prontos</Text>{participants.find(p => p.user_id === userId)?.is_ready ? (<View style={{flex:1, justifyContent:'center', alignItems:'center'}}><Ionicons name="checkmark-circle" size={64} color="#00B37E" /><Text style={{color:'#fff', marginTop:10}}>Selecionado!</Text>{userId === currentRoom.host_id && participants.every(p => p.is_ready) && (<TouchableOpacity style={[styles.actionButton, {marginTop:30, backgroundColor:'#FFD700'}]} onPress={handleStartGame} disabled={saving}><Text style={[styles.actionButtonText, {color:'#000'}]}>INICIAR PARTIDA</Text></TouchableOpacity>)}</View>) : (<FlatList data={catalogChars} keyExtractor={item => item.id} renderItem={({item}) => (<View style={styles.catalogItem}><TouchableOpacity style={{flex: 1, flexDirection:'row', alignItems:'center'}} onPress={() => handleSelectCharacter(item.id)}>{item.image_url && <Image source={{uri: item.image_url}} style={styles.catalogImage} />}<View style={styles.catalogInfo}><Text style={styles.catalogName}>{item.name} (HP: {item.base_hp})</Text><View style={{flexDirection:'row'}}><Text style={styles.catalogOrigin}>{item.base_class}</Text><Text style={[styles.catalogOrigin, {marginLeft: 10, color: getCategoryColor(item.category), fontWeight:'bold'}]}>• {item.category?.toUpperCase() || 'INDIVIDUAL'}</Text></View></View><Ionicons name="arrow-forward-circle" size={32} color="#8257e5" /></TouchableOpacity><View style={{flexDirection:'row', marginLeft: 10}}><TouchableOpacity onPress={() => openEditCharModal(item)} style={{padding:5}}><Ionicons name="pencil" size={20} color="#8257e5" /></TouchableOpacity><TouchableOpacity onPress={() => handleDeleteChar(item.id)} style={{padding:5}}><Ionicons name="trash" size={20} color="#ff4444" /></TouchableOpacity></View></View>)}/>)}</View>)}</View></Modal>
+      {/* LOBBY */}
+      <Modal animationType="slide" transparent={false} visible={lobbyModalVisible} onRequestClose={()=>{}}>
+          <View style={styles.lobbyContainer}>
+              <View style={styles.lobbyHeader}>
+                  <Text style={styles.lobbyTitle}>Sala: {currentRoom?.code}</Text>
+                  <TouchableOpacity onPress={handleLeaveRoom}><Ionicons name="close-circle" size={32} color="#ff4444" /></TouchableOpacity>
+              </View>
+              {currentRoom?.status === 'waiting' && (
+                  <View style={{flex: 1, justifyContent:'center', alignItems:'center'}}>
+                      <Text style={styles.phaseTitle}>Aguardando...</Text>
+                      <View style={styles.participantsList}>
+                          {participants.map(p => (
+                              <View key={p.id} style={styles.participantRow}>
+                                  <Ionicons name="person" size={20} color="#fff" />
+                                  <Text style={styles.participantName}>{p.username}</Text>
+                                  {p.user_id === currentRoom.host_id && <Text style={{color:'#FFD700', marginLeft:5}}>👑</Text>}
+                              </View>
+                          ))}
+                      </View>
+                      {userId === currentRoom.host_id ? (
+                          <TouchableOpacity style={styles.actionButton} onPress={handleStartSelection}>
+                              <Text style={styles.actionButtonText}>INICIAR SELEÇÃO</Text>
+                          </TouchableOpacity>
+                      ) : (
+                          <Text style={{color:'#777'}}>Aguardando Host...</Text>
+                      )}
+                  </View>
+              )}
+              {currentRoom?.status === 'selecting' && (
+                  <View style={{flex: 1}}>
+                      <Text style={styles.phaseTitle}>Escolha seu Herói</Text>
+                      <Text style={{color:'#ccc', textAlign:'center', marginBottom:10}}>{participants.filter(p => p.is_ready).length} / {participants.length} prontos</Text>
+                      {participants.find(p => p.user_id === userId)?.is_ready ? (
+                          <View style={{flex:1, justifyContent:'center', alignItems:'center'}}>
+                              <Ionicons name="checkmark-circle" size={64} color="#00B37E" />
+                              <Text style={{color:'#fff', marginTop:10}}>Selecionado!</Text>
+                              {userId === currentRoom.host_id && participants.every(p => p.is_ready) && (
+                                  <TouchableOpacity style={[styles.actionButton, {marginTop:30, backgroundColor:'#FFD700'}]} onPress={handleStartGame} disabled={saving}>
+                                      <Text style={[styles.actionButtonText, {color:'#000'}]}>INICIAR PARTIDA</Text>
+                                  </TouchableOpacity>
+                              )}
+                          </View>
+                      ) : (
+                          <FlatList data={catalogChars} keyExtractor={item => item.id} renderItem={({item}) => (
+                              <View style={styles.catalogItem}>
+                                  <TouchableOpacity style={{flex: 1, flexDirection:'row', alignItems:'center'}} onPress={() => handleSelectCharacter(item.id)}>
+                                      {item.image_url && <Image source={{uri: item.image_url}} style={styles.catalogImage} />}
+                                      <View style={styles.catalogInfo}>
+                                          <Text style={styles.catalogName}>{item.name} (HP: {item.base_hp})</Text>
+                                          <View style={{flexDirection:'row'}}>
+                                              <Text style={styles.catalogOrigin}>{item.base_class}</Text>
+                                              <Text style={[styles.catalogOrigin, {marginLeft: 10, color: getCategoryColor(item.category), fontWeight:'bold'}]}>• {item.category?.toUpperCase() || 'INDIVIDUAL'}</Text>
+                                          </View>
+                                      </View>
+                                      <Ionicons name="arrow-forward-circle" size={32} color="#8257e5" />
+                                  </TouchableOpacity>
+                                  <View style={{flexDirection:'row', marginLeft: 10}}>
+                                      <TouchableOpacity onPress={() => openEditCharModal(item)} style={{padding:5}}><Ionicons name="pencil" size={20} color="#8257e5" /></TouchableOpacity>
+                                      <TouchableOpacity onPress={() => handleDeleteChar(item.id)} style={{padding:5}}><Ionicons name="trash" size={20} color="#ff4444" /></TouchableOpacity>
+                                  </View>
+                              </View>
+                          )}/>
+                      )}
+                  </View>
+              )}
+          </View>
+      </Modal>
 
-      {/* --- MODAL CRIAR/EDITAR PERSONAGEM --- */}
+      {/* --- NOVO: MODAL DE HISTÓRICO --- */}
+      <Modal animationType="slide" transparent={true} visible={historyModalVisible} onRequestClose={() => setHistoryModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+            <View style={[styles.modalContent, {maxHeight: '80%'}]}>
+                <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>📜 Últimas 10 Partidas</Text>
+                    <TouchableOpacity onPress={() => setHistoryModalVisible(false)}><Ionicons name="close" size={24} color="#ccc" /></TouchableOpacity>
+                </View>
+                {matchHistory.length === 0 ? (
+                    <Text style={{color:'#777', textAlign:'center', marginTop:20}}>Nenhuma partida encontrada.</Text>
+                ) : (
+                    <FlatList
+                        data={matchHistory}
+                        keyExtractor={item => item.id}
+                        renderItem={({item}) => (
+                            <View style={styles.historyCard}>
+                                <View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:5}}>
+                                    <Text style={{color:'#FFD700', fontWeight:'bold', fontSize:16}}>🏆 {item.winner_name}</Text>
+                                    <Text style={{color:'#aaa', fontSize:12}}>{new Date(item.played_at).toLocaleDateString()}</Text>
+                                </View>
+                                <Text style={{color:'#fff', marginBottom:5}}>Venceu com: <Text style={{fontWeight:'bold', color:'#8257e5'}}>{item.winner_character}</Text></Text>
+                                <Text style={{color:'#ccc', fontSize:12, marginBottom:10}}>⏱️ Duração: {formatDuration(item.duration_seconds)}</Text>
+                                <View style={{backgroundColor:'#222', padding:8, borderRadius:4}}>
+                                    <Text style={{color:'#777', fontSize:10, marginBottom:3}}>RESULTADOS:</Text>
+                                    {item.participants_snapshot?.map((p, idx) => (
+                                        <Text key={idx} style={{color: p.username === item.winner_name ? '#FFD700' : '#888', fontSize:11}}>
+                                            {idx + 1}. {p.username} {p.current_hp <= 0 && '(💀)'}
+                                        </Text>
+                                    ))}
+                                </View>
+                            </View>
+                        )}
+                    />
+                )}
+            </View>
+        </View>
+      </Modal>
+
+      {/* CREATE CHAR MODAL */}
       <Modal transparent visible={createCharModalVisible} animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, {maxHeight: '90%'}]}>
@@ -430,21 +522,16 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     <TouchableOpacity onPress={()=>setNewCategory('hit')} style={[styles.typeBadge, newCategory==='hit' && {backgroundColor:'#ff4444', borderColor:'#ff4444'}]}><Text style={[styles.typeText, newCategory!=='hit' && {color:'#777'}]}>HIT</Text></TouchableOpacity>
                 </View>
 
-                {newCategory !== 'equipe' && (
-                    <TextInput style={styles.input} placeholder={newCategory === 'hit' ? "Quantidade de Hits (Ex: 5)" : "Vida Máxima (Ex: 60)"} placeholderTextColor="#555" value={hpInput1} onChangeText={setHpInput1} keyboardType="numeric"/>
-                )}
-                
+                {newCategory !== 'equipe' && (<TextInput style={styles.input} placeholder={newCategory === 'hit' ? "Quantidade de Hits (Ex: 5)" : "Vida Máxima (Ex: 60)"} placeholderTextColor="#555" value={hpInput1} onChangeText={setHpInput1} keyboardType="numeric"/>)}
                 {newCategory === 'equipe' && (
                     <View style={{backgroundColor:'#222', padding:10, borderRadius:8, marginBottom:10}}>
                         <Text style={{color:'#aaa', marginBottom:10}}>Membros da Equipe (Adicione um a um):</Text>
-                        
                         {teamMembers.map((m, idx) => (
                             <View key={idx} style={{flexDirection:'row', justifyContent:'space-between', marginBottom:5, borderBottomWidth:1, borderBottomColor:'#333', paddingBottom:5}}>
                                 <Text style={{color:'#fff'}}>{m.name} ({m.base_hp} HP)</Text>
                                 <TouchableOpacity onPress={()=>removeMemberFromTeam(idx)}><Ionicons name="trash" size={16} color="#ff4444"/></TouchableOpacity>
                             </View>
                         ))}
-
                         <View style={{flexDirection:'row', marginTop:10}}>
                             <TextInput style={[styles.input, {flex:2, marginBottom:0, marginRight:5}]} placeholder="Nome" placeholderTextColor="#555" value={memberName} onChangeText={setMemberName}/>
                             <TextInput style={[styles.input, {flex:1, marginBottom:0, marginRight:5}]} placeholder="HP" placeholderTextColor="#555" value={memberHp} onChangeText={setMemberHp} keyboardType="numeric"/>
@@ -454,7 +541,16 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     </View>
                 )}
 
-                {/* UPLOAD E SKILLS MANTIDOS IGUAIS AO ANTERIOR... */}
+                <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                    <Text style={{color:'#fff', fontWeight:'bold'}}>Possui Escudo Inicial?</Text>
+                    <TouchableOpacity onPress={() => setHasShield(!hasShield)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: hasShield ? '#00B37E' : 'transparent'}}>
+                        {hasShield && <Ionicons name="checkmark" size={18} color="#fff" />}
+                    </TouchableOpacity>
+                </View>
+                {hasShield && (
+                    <TextInput style={styles.input} placeholder="Quantidade de Escudo" placeholderTextColor="#555" value={shieldInput} onChangeText={setShieldInput} keyboardType="numeric"/>
+                )}
+
                 <Text style={[styles.sectionHeader, {marginTop:10}]}>IMAGEM DO PERSONAGEM</Text>
                 <TouchableOpacity onPress={pickImage} style={styles.imagePickerBtn}>
                     {pickedImageUri ? <Image source={{ uri: pickedImageUri }} style={styles.imagePreview} /> : newImage ? <Image source={{ uri: newImage }} style={styles.imagePreview} /> : <View style={{alignItems:'center'}}><Ionicons name="image-outline" size={40} color="#777" /><Text style={{color:'#777', marginTop:5}}>Toque para selecionar</Text></View>}
@@ -464,8 +560,24 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                 <View style={styles.skillForm}>
                     <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Nome Skill" placeholderTextColor="#555" value={skillName} onChangeText={setSkillName}/>
                     <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Descrição" placeholderTextColor="#555" value={skillDesc} onChangeText={setSkillDesc}/>
-                    <TextInput style={[styles.input, {marginBottom:10}]} placeholder="Custo" placeholderTextColor="#555" value={skillCost} onChangeText={setSkillCost}/>
-                    <TextInput style={[styles.input, {marginBottom:10}]} placeholder="Duração" placeholderTextColor="#555" value={skillDuration} onChangeText={setSkillDuration} keyboardType="numeric"/>
+                    
+                    {skillType !== 'passive' && (
+                        <View>
+                            <TextInput style={[styles.input, {marginBottom:10}]} placeholder="Custo" placeholderTextColor="#555" value={skillCost} onChangeText={setSkillCost}/>
+                            <TextInput style={[styles.input, {marginBottom:10}]} placeholder="Duração" placeholderTextColor="#555" value={skillDuration} onChangeText={setSkillDuration} keyboardType="numeric"/>
+                        </View>
+                    )}
+
+                    <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                        <Text style={{color:'#aaa', fontSize:12}}>Gera Escudo?</Text>
+                        <TouchableOpacity onPress={() => setSkillGeneratesShield(!skillGeneratesShield)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillGeneratesShield ? '#FFD700' : 'transparent'}}>
+                            {skillGeneratesShield && <Ionicons name="checkmark" size={14} color="#000" />}
+                        </TouchableOpacity>
+                    </View>
+                    {skillGeneratesShield && (
+                        <TextInput style={[styles.input, {marginBottom:10}]} placeholder="Valor do Escudo" placeholderTextColor="#555" value={skillShieldValue} onChangeText={setSkillShieldValue} keyboardType="numeric"/>
+                    )}
+
                     <View style={{flexDirection:'row', justifyContent:'space-around', marginBottom:15}}>
                         <TouchableOpacity onPress={()=>setSkillType('active')} style={[styles.typeBadge, skillType==='active' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}><Text style={styles.typeText}>Ativa</Text></TouchableOpacity>
                         <TouchableOpacity onPress={()=>setSkillType('passive')} style={[styles.typeBadge, skillType==='passive' && {backgroundColor:'#8257e5', borderColor:'#8257e5'}]}><Text style={styles.typeText}>Passiva</Text></TouchableOpacity>
@@ -473,22 +585,118 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     </View>
                     <TouchableOpacity onPress={addSkillToTempList} style={[styles.saveButton, {marginTop:0, backgroundColor:'#333', borderColor:'#555', borderWidth:1}]}><Text style={{color:'#fff'}}>+ Adicionar na Lista</Text></TouchableOpacity>
                 </View>
-                {tempSkills.length > 0 && (<View style={{marginTop:15}}><Text style={{color:'#ccc', marginBottom:5}}>Lista de Habilidades ({tempSkills.length}):</Text>{tempSkills.map((s, index) => (<View key={index} style={styles.skillRow}><View style={{flex:1}}><Text style={{color:'#fff', fontWeight:'bold'}}>{s.name}</Text><Text style={{color:'#777', fontSize:10}}>{s.description}</Text></View><TouchableOpacity onPress={() => removeSkillFromTemp(index)}><Ionicons name="trash" size={18} color="#ff4444" /></TouchableOpacity></View>))}</View>)}
+
+                {tempSkills.length > 0 && (
+                    <View style={{marginTop:15}}>
+                        <Text style={{color:'#ccc', marginBottom:5}}>Lista de Habilidades ({tempSkills.length}):</Text>
+                        {tempSkills.map((s, index) => (
+                            <View key={index} style={styles.skillRow}>
+                                <View style={{flex:1}}>
+                                    <Text style={{color:'#fff', fontWeight:'bold'}}>{s.name}</Text>
+                                    <Text style={{color:'#777', fontSize:10}}>{s.description} {s.shield_value ? ` • Escudo: ${s.shield_value}` : ''}</Text>
+                                </View>
+                                <TouchableOpacity onPress={() => removeSkillFromTemp(index)}><Ionicons name="trash" size={18} color="#ff4444" /></TouchableOpacity>
+                            </View>
+                        ))}
+                    </View>
+                )}
                 <View style={{height:20}} />
             </ScrollView>
             <View style={{marginTop:10}}>
-                <TouchableOpacity onPress={handleSaveChar} style={styles.saveButton} disabled={saving}>{uploadingImage ? <ActivityIndicator color="#fff"/> : <Text style={styles.saveButtonText}>{saving ? "Salvando..." : (editingCharId ? "ATUALIZAR" : "CRIAR")}</Text>}</TouchableOpacity>
-                <TouchableOpacity onPress={()=>{setCreateCharModalVisible(false); if(currentRoom) setLobbyModalVisible(true);}} style={[styles.saveButton,{backgroundColor:'#222', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity>
+                <TouchableOpacity onPress={handleSaveChar} style={styles.saveButton} disabled={saving}>
+                    {uploadingImage ? <ActivityIndicator color="#fff"/> : <Text style={styles.saveButtonText}>{saving ? "Salvando..." : (editingCharId ? "ATUALIZAR" : "CRIAR")}</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={()=>{setCreateCharModalVisible(false); if(currentRoom) setLobbyModalVisible(true);}} style={[styles.saveButton,{backgroundColor:'#222', marginTop:10}]}>
+                    <Text style={styles.saveButtonText}>Cancelar</Text>
+                </TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
-      {/* RESTO DOS MODAIS (EVENTOS, EFEITOS, DETALHES) MANTIDOS IGUAIS */}
-      <Modal transparent visible={manageEventsModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Eventos</Text><TouchableOpacity onPress={openCreateEventModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity><TouchableOpacity onPress={()=>setManageEventsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity></View><FlatList data={catalogEvents} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={styles.catalogName}>{item.title}</Text></View><TouchableOpacity onPress={()=>openEditEventModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEvent(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/></View></View></Modal>
-      <Modal transparent visible={createEventModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><Text style={styles.modalTitle}>Criar Evento</Text><TextInput style={styles.input} placeholder="Título" placeholderTextColor="#555" value={newEventTitle} onChangeText={setNewEventTitle}/><TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={newEventDesc} onChangeText={setNewEventDesc}/><TextInput style={styles.input} placeholder="URL Imagem" placeholderTextColor="#555" value={newEventImage} onChangeText={setNewEventImage}/><TouchableOpacity onPress={handleSaveEvent} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity><TouchableOpacity onPress={()=>setCreateEventModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity></View></View></Modal>
-      <Modal transparent visible={manageEffectsModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Buffs & Debuffs</Text><TouchableOpacity onPress={openCreateEffectModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity><TouchableOpacity onPress={()=>setManageEffectsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity></View><FlatList data={catalogEffects} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={[styles.catalogName, {color: item.type==='buff'?'#00B37E':'#ff4444'}]}>{item.title}</Text><Text style={styles.catalogOrigin}>{item.type.toUpperCase()}{item.duration ? ` • ${item.duration} Rnds` : ''}</Text></View><TouchableOpacity onPress={()=>openEditEffectModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEffect(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/></View></View></Modal>
-      <Modal transparent visible={createEffectModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><Text style={styles.modalTitle}>{editingEffectId ? "Editar Efeito" : "Criar Efeito"}</Text><View style={{flexDirection:'row', marginBottom:15}}><TouchableOpacity onPress={()=>setEffectType('buff')} style={[styles.typeBadge, effectType==='buff' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}><Text style={styles.typeText}>BUFF (Bom)</Text></TouchableOpacity><TouchableOpacity onPress={()=>setEffectType('debuff')} style={[styles.typeBadge, effectType==='debuff' && {backgroundColor:'#ff4444', borderColor:'#ff4444'}]}><Text style={styles.typeText}>DEBUFF (Ruim)</Text></TouchableOpacity></View><TextInput style={styles.input} placeholder="Título (Ex: Veneno)" placeholderTextColor="#555" value={effectTitle} onChangeText={setEffectTitle}/><TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={effectDesc} onChangeText={setEffectDesc}/><TextInput style={styles.input} placeholder="Duração" placeholderTextColor="#555" value={effectDuration} onChangeText={setEffectDuration} keyboardType="numeric"/>{effectType === 'debuff' && (<TextInput style={[styles.input, {borderColor:'#ff4444'}]} placeholder="Dano (Ex: 10)" placeholderTextColor="#555" value={effectDamage} onChangeText={setEffectDamage}/>)}<TouchableOpacity onPress={handleSaveEffect} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity><TouchableOpacity onPress={()=>setCreateEffectModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity></View></View></Modal>
-      <Modal animationType="fade" transparent={true} visible={detailsModalVisible} onRequestClose={() => setDetailsModalVisible(false)}><View style={styles.modalOverlay}><View style={[styles.modalContent, { height: '60%' }]}>{selectedCharacter && (<View style={{alignItems: 'center'}}>{selectedCharacter.game_characters.image_url ? <Image source={{uri: selectedCharacter.game_characters.image_url}} style={styles.detailsImageBig} /> : <View style={styles.detailsIconBig}><Text style={{fontSize: 40}}>👤</Text></View>}<Text style={styles.detailsTitle}>{selectedCharacter.game_characters.name}</Text><Text style={styles.detailsClass}>{selectedCharacter.game_characters.base_class}</Text><Text style={[styles.detailsClass, {color: getCategoryColor(selectedCharacter.game_characters.category), marginTop:5}]}>{selectedCharacter.game_characters.category?.toUpperCase() || 'INDIVIDUAL'}</Text><View style={styles.levelBigBadge}><Text style={styles.levelLabel}>HP BASE: {selectedCharacter.game_characters.base_hp}</Text></View><TouchableOpacity style={styles.closeButton} onPress={() => setDetailsModalVisible(false)}><Text style={styles.closeButtonText}>Fechar</Text></TouchableOpacity></View>)}</View></View></Modal>
+
+      {/* EVENT MODAL */}
+      <Modal transparent visible={manageEventsModalVisible} animationType="slide">
+          <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                  <View style={styles.modalHeader}>
+                      <Text style={styles.modalTitle}>Eventos</Text>
+                      <TouchableOpacity onPress={openCreateEventModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity>
+                      <TouchableOpacity onPress={()=>setManageEventsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity>
+                  </View>
+                  <FlatList data={catalogEvents} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={styles.catalogName}>{item.title}</Text></View><TouchableOpacity onPress={()=>openEditEventModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEvent(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/>
+              </View>
+          </View>
+      </Modal>
+
+      {/* CREATE EVENT */}
+      <Modal transparent visible={createEventModalVisible} animationType="slide">
+          <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                  <Text style={styles.modalTitle}>Criar Evento</Text>
+                  <TextInput style={styles.input} placeholder="Título" placeholderTextColor="#555" value={newEventTitle} onChangeText={setNewEventTitle}/>
+                  <TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={newEventDesc} onChangeText={setNewEventDesc}/>
+                  <TextInput style={styles.input} placeholder="URL Imagem" placeholderTextColor="#555" value={newEventImage} onChangeText={setNewEventImage}/>
+                  <TouchableOpacity onPress={handleSaveEvent} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={()=>setCreateEventModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity>
+              </View>
+          </View>
+      </Modal>
+
+      {/* EFFECTS MODAL */}
+      <Modal transparent visible={manageEffectsModalVisible} animationType="slide">
+          <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                  <View style={styles.modalHeader}>
+                      <Text style={styles.modalTitle}>Buffs & Debuffs</Text>
+                      <TouchableOpacity onPress={openCreateEffectModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity>
+                      <TouchableOpacity onPress={()=>setManageEffectsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity>
+                  </View>
+                  <FlatList data={catalogEffects} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={[styles.catalogName, {color: item.type==='buff'?'#00B37E':'#ff4444'}]}>{item.title}</Text><Text style={styles.catalogOrigin}>{item.type.toUpperCase()}{item.duration ? ` • ${item.duration} Rnds` : ''}</Text></View><TouchableOpacity onPress={()=>openEditEffectModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEffect(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/>
+              </View>
+          </View>
+      </Modal>
+
+      {/* CREATE EFFECT */}
+      <Modal transparent visible={createEffectModalVisible} animationType="slide">
+          <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                  <Text style={styles.modalTitle}>{editingEffectId ? "Editar Efeito" : "Criar Efeito"}</Text>
+                  <View style={{flexDirection:'row', marginBottom:15}}>
+                      <TouchableOpacity onPress={()=>setEffectType('buff')} style={[styles.typeBadge, effectType==='buff' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}><Text style={styles.typeText}>BUFF (Bom)</Text></TouchableOpacity>
+                      <TouchableOpacity onPress={()=>setEffectType('debuff')} style={[styles.typeBadge, effectType==='debuff' && {backgroundColor:'#ff4444', borderColor:'#ff4444'}]}><Text style={styles.typeText}>DEBUFF (Ruim)</Text></TouchableOpacity>
+                  </View>
+                  <TextInput style={styles.input} placeholder="Título (Ex: Veneno)" placeholderTextColor="#555" value={effectTitle} onChangeText={setEffectTitle}/>
+                  <TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={effectDesc} onChangeText={setEffectDesc}/>
+                  <TextInput style={styles.input} placeholder="Duração" placeholderTextColor="#555" value={effectDuration} onChangeText={setEffectDuration} keyboardType="numeric"/>
+                  {effectType === 'debuff' && (<TextInput style={[styles.input, {borderColor:'#ff4444'}]} placeholder="Dano (Ex: 10)" placeholderTextColor="#555" value={effectDamage} onChangeText={setEffectDamage}/>)}
+                  <TouchableOpacity onPress={handleSaveEffect} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={()=>setCreateEffectModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity>
+              </View>
+          </View>
+      </Modal>
+
+      {/* DETAILS MODAL */}
+      <Modal animationType="fade" transparent={true} visible={detailsModalVisible} onRequestClose={() => setDetailsModalVisible(false)}>
+          <View style={styles.modalOverlay}>
+              <View style={[styles.modalContent, { height: '60%' }]}>
+                  {selectedCharacter && (
+                      <View style={{alignItems: 'center'}}>
+                          {selectedCharacter.game_characters.image_url ? <Image source={{uri: selectedCharacter.game_characters.image_url}} style={styles.detailsImageBig} /> : <View style={styles.detailsIconBig}><Text style={{fontSize: 40}}>👤</Text></View>}
+                          <Text style={styles.detailsTitle}>{selectedCharacter.game_characters.name}</Text>
+                          <Text style={styles.detailsClass}>{selectedCharacter.game_characters.base_class}</Text>
+                          <Text style={[styles.detailsClass, {color: getCategoryColor(selectedCharacter.game_characters.category), marginTop:5}]}>{selectedCharacter.game_characters.category?.toUpperCase() || 'INDIVIDUAL'}</Text>
+                          <View style={styles.levelBigBadge}>
+                              <Text style={styles.levelLabel}>HP BASE: {selectedCharacter.game_characters.base_hp}</Text>
+                              {(selectedCharacter.game_characters.base_shield || 0) > 0 && <Text style={[styles.levelLabel, {color:'#44aaff', marginTop:5}]}>ESCUDO: {selectedCharacter.game_characters.base_shield}</Text>}
+                          </View>
+                          <TouchableOpacity style={styles.closeButton} onPress={() => setDetailsModalVisible(false)}>
+                              <Text style={styles.closeButtonText}>Fechar</Text>
+                          </TouchableOpacity>
+                      </View>
+                  )}
+              </View>
+          </View>
+      </Modal>
     </View>
   );
 }
@@ -554,8 +762,8 @@ const styles = StyleSheet.create({
   typeBadge: { borderWidth:1, borderColor:'#555', padding:8, borderRadius:20, flex:1, marginHorizontal:2, alignItems:'center' },
   typeText: { color:'#fff', fontSize:10, fontWeight:'bold' },
   skillRow: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', padding:10, borderBottomWidth:1, borderBottomColor:'#333' },
-  
-  // ESTILOS DE UPLOAD IMAGEM
   imagePickerBtn: { width:'100%', height:150, backgroundColor:'#222', borderRadius:8, alignItems:'center', justifyContent:'center', borderStyle:'dashed', borderWidth:1, borderColor:'#555', marginBottom:20 },
-  imagePreview: { width:'100%', height:'100%', borderRadius:8, resizeMode:'cover' }
+  imagePreview: { width:'100%', height:'100%', borderRadius:8, resizeMode:'cover' },
+  
+  historyCard: { backgroundColor: '#202024', padding: 15, borderRadius: 12, marginBottom: 15, borderLeftWidth: 4, borderLeftColor: '#FFD700' }
 });

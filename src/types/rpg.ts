@@ -28,11 +28,10 @@ export interface GameCharacter {
   image_url?: string;
   created_by?: string;
   base_hp: number;
-  
-  // Novos campos para Categorias e Equipe
   category?: 'individual' | 'equipe' | 'hit';
   unit_count?: number; 
   team_members?: TeamMember[]; 
+  base_shield?: number; // NOVO: Escudo inicial
 }
 
 export interface UserRosterItem {
@@ -64,6 +63,7 @@ export interface Room {
   
   // Controle de Fases
   turn_phase?: 'initial' | 'main' | 'end'; 
+  created_at: string; // <--- ADICIONE ISSO AQUI PARA CORRIGIR O ERRO
 }
 
 export interface CharacterSkill {
@@ -74,6 +74,7 @@ export interface CharacterSkill {
   type: 'active' | 'passive' | 'transformation';
   cost?: string;
   duration?: number; 
+  shield_value?: number; // NOVO: Quanto de escudo a skill gera
 }
 
 export interface ActiveTransformation {
@@ -122,4 +123,15 @@ export interface RoomParticipant {
   // Estado da Equipe em Jogo
   team_state?: TeamMemberState[]; 
   active_member_name?: string; // Nome do membro que está lutando agora
+  current_shield?: number; // NOVO: Escudo atual no jogo
+}
+
+export interface MatchHistoryItem {
+  id: string;
+  room_code: string;
+  winner_name: string;
+  winner_character: string;
+  played_at: string;
+  duration_seconds: number;
+  participants_snapshot: RoomParticipant[]; // Reusamos a interface de participante
 }
