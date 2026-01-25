@@ -20,18 +20,21 @@ export interface TeamMemberState {
   max_hp: number;
 }
 
+// src/types/rpg.ts
+
 export interface GameCharacter {
   id: string;
   name: string;
   anime_origin: string;
   base_class: string;
   image_url?: string;
+  challenge_banner_url?: string; // <--- NOVO CAMPO
   created_by?: string;
   base_hp: number;
   category?: 'individual' | 'equipe' | 'hit';
   unit_count?: number; 
   team_members?: TeamMember[]; 
-  base_shield?: number; // NOVO: Escudo inicial
+  base_shield?: number;
 }
 
 export interface UserRosterItem {
@@ -129,6 +132,7 @@ export interface RoomParticipant {
   team_state?: TeamMemberState[]; 
   active_member_name?: string; // Nome do membro que está lutando agora
   current_shield?: number; // NOVO: Escudo atual no jogo
+  challenge_completed?: boolean; // NOVO: Desafio completado
 }
 
 export interface MatchHistoryItem {

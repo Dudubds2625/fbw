@@ -5,7 +5,7 @@ import {
   RefreshControl, Alert, Modal, FlatList, TextInput, Image, KeyboardAvoidingView, Platform, ActivityIndicator 
 } from 'react-native';
 import { supabase } from '../lib/supabase';
-import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, TeamMemberState, MatchHistoryItem } from '../types/rpg';
+import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, MatchHistoryItem } from '../types/rpg';
 import { Ionicons } from '@expo/vector-icons'; 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker'; 
@@ -23,21 +23,21 @@ const generateRoomCode = () => {
   return result;
 };
 
-interface GameCharacterWithCreator extends GameCharacter { created_by?: string; }
+interface GameCharacterWithCreator extends GameCharacter { 
+  created_by?: string; 
+  challenge_banner_url?: string; 
+}
 
 export default function HomeScreen({ onStartGame }: HomeScreenProps) {
-  // --- DADOS GERAIS ---
   const [playedCharacters, setPlayedCharacters] = useState<UserRosterItem[]>([]);
   const [catalogChars, setCatalogChars] = useState<GameCharacterWithCreator[]>([]);
   const [catalogEvents, setCatalogEvents] = useState<GameEvent[]>([]);
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
   const [victories, setVictories] = useState<Victory[]>([]);
   
-  // DADOS DO HISTÓRICO
   const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
 
-  // ESTATÍSTICAS DETALHADAS
   const [selectedCharStats, setSelectedCharStats] = useState({ matches: 0, wins: 0, winRate: 0, missions: 0 });
   const [loadingStats, setLoadingStats] = useState(false);
 
@@ -48,14 +48,12 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // --- MULTIPLAYER ---
   const [lobbyModalVisible, setLobbyModalVisible] = useState(false);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
   const [joinCode, setJoinCode] = useState(''); 
   const roomChannelRef = useRef<RealtimeChannel | null>(null);
 
-  // --- MODAIS ---
   const [createCharModalVisible, setCreateCharModalVisible] = useState(false);
   const [manageEventsModalVisible, setManageEventsModalVisible] = useState(false);
   const [createEventModalVisible, setCreateEventModalVisible] = useState(false);
@@ -64,22 +62,21 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
   const [selectedCharacter, setSelectedCharacter] = useState<UserRosterItem | null>(null);
 
-  // --- FORMULÁRIO PERSONAGEM ---
   const [editingCharId, setEditingCharId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newOrigin, setNewOrigin] = useState('');
   const [newClass, setNewClass] = useState('');
   const [newCategory, setNewCategory] = useState<'individual' | 'equipe' | 'hit'>('individual');
   const [hpInput1, setHpInput1] = useState('10'); 
-  
   const [hasShield, setHasShield] = useState(false);
   const [shieldInput, setShieldInput] = useState('0');
-
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [memberName, setMemberName] = useState('');
   const [memberHp, setMemberHp] = useState('');
   const [newImage, setNewImage] = useState(''); 
   const [pickedImageUri, setPickedImageUri] = useState(''); 
+  const [newBanner, setNewBanner] = useState('');
+  const [pickedBannerUri, setPickedBannerUri] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
   
   const [tempSkills, setTempSkills] = useState<Partial<CharacterSkill>[]>([]);
@@ -91,7 +88,6 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [skillGeneratesShield, setSkillGeneratesShield] = useState(false);
   const [skillShieldValue, setSkillShieldValue] = useState('');
 
-  // --- FORMULÁRIO EVENTO/EFEITO ---
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [newEventTitle, setNewEventTitle] = useState('');
   const [newEventDesc, setNewEventDesc] = useState('');
@@ -114,9 +110,19 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
           setUserId(user.id);
           const { data: profile } = await supabase.from('profiles').select('username').eq('id', user.id).single();
           setUsername(profile?.username || user.email?.split('@')[0] || 'Viajante');
+
+          const { data: roster, error } = await supabase
+            .from('user_roster')
+            .select(`
+                id, current_level, acquired_at, challenge_completed, 
+                game_characters (*)
+            `)
+            .eq('user_id', user.id) 
+            .order('acquired_at', { ascending: false });
+
+          if (error) console.log("Erro roster:", error.message);
+          else setPlayedCharacters(roster as any || []);
       }
-      const { data: roster } = await supabase.from('user_roster').select(`id, current_level, acquired_at, challenge_completed, game_characters (id, name, anime_origin, base_class, image_url, base_hp, base_shield, category, unit_count, team_members)`).order('acquired_at', { ascending: false });
-      setPlayedCharacters(roster as any || []);
       const { data: vict } = await supabase.from('victories').select('*');
       setVictories(vict || []);
       await fetchCatalogs();
@@ -141,7 +147,6 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       setHistoryModalVisible(true);
   };
 
-  // --- TOGGLE CHALLENGE ---
   const handleToggleChallenge = async (item: UserRosterItem) => {
       const newValue = !item.challenge_completed;
       setPlayedCharacters(prev => prev.map(p => p.id === item.id ? { ...p, challenge_completed: newValue } : p));
@@ -151,46 +156,27 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       await supabase.from('user_roster').update({ challenge_completed: newValue }).eq('id', item.id);
   };
 
-  // --- ESTATÍSTICAS DETALHADAS ---
   const handleOpenDetails = async (item: UserRosterItem) => {
+      if (!item.game_characters) return;
       setSelectedCharacter(item);
       setLoadingStats(true);
       setDetailsModalVisible(true);
 
-      // 1. Contar Vitórias (Filtra por user_id e nome do personagem)
-      const { count: winsCount } = await supabase
-          .from('victories')
-          .select('*', { count: 'exact', head: true })
-          .eq('user_id', userId)
-          .eq('character_name', item.game_characters.name);
-      
+      const { count: winsCount } = await supabase.from('victories').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('character_name', item.game_characters.name);
       const charWins = winsCount || 0;
       
-      // 2. Contar Missões Completas (Se necessário no futuro, por enquanto o desafio é manual)
-      // Mantive a lógica simples, mas se tiver missões no victories, filtra igual:
-      // .eq('mission_completed', true);
-
-      // 3. Contar Partidas Jogadas
       const { data: allHistory } = await supabase.from('match_history').select('participants_snapshot');
       let charMatches = 0;
       if (allHistory) {
           allHistory.forEach(match => {
-              const played = match.participants_snapshot.some((p: any) => 
-                  p.user_id === userId && p.selected_character_id === item.game_characters.id
-              );
+              const played = match.participants_snapshot.some((p: any) => p.user_id === userId && p.selected_character_id === item.game_characters.id);
               if (played) charMatches++;
           });
       }
-
       if (charMatches < charWins) charMatches = charWins;
       const rate = charMatches > 0 ? Math.round((charWins / charMatches) * 100) : 0;
 
-      setSelectedCharStats({
-          wins: charWins,
-          matches: charMatches,
-          winRate: rate,
-          missions: 0 // Placeholder se não estiver usando missões de evento no perfil
-      });
+      setSelectedCharStats({ wins: charWins, matches: charMatches, winRate: rate, missions: 0 });
       setLoadingStats(false);
   };
 
@@ -201,13 +187,18 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     if (!result.canceled) setPickedImageUri(result.assets[0].uri);
   };
 
+  const pickBanner = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [16, 9], quality: 0.5 });
+    if (!result.canceled) setPickedBannerUri(result.assets[0].uri);
+  };
+
   const uploadToSupabase = async (uri: string): Promise<string | null> => {
     try {
         setUploadingImage(true);
         const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
         const arrayBuffer = decode(base64);
         const fileExt = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
-        const fileName = `${Date.now()}.${fileExt}`;
+        const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
         const filePath = `${fileName}`;
         const { error: uploadError } = await supabase.storage.from('rpg-images').upload(filePath, arrayBuffer, { contentType: `image/${fileExt === 'jpg' ? 'jpeg' : fileExt}`, upsert: false });
         if (uploadError) throw uploadError;
@@ -219,7 +210,6 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     } finally { setUploadingImage(false); }
   };
 
-  // --- LOGICA DA SALA ---
   const subscribeToRoom = (roomCode: string) => {
     if (roomChannelRef.current) supabase.removeChannel(roomChannelRef.current);
     const channel = supabase.channel(`room_${roomCode}`)
@@ -245,7 +235,6 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     
     await supabase.from('room_participants').insert({ room_code: code, user_id: userId, user_email: userEmail, username });
     setCurrentRoom({ code, host_id: userId, status: 'waiting', created_at: new Date().toISOString() });
-    
     setParticipants([{ id: 'local', room_code: code, user_id: userId, user_email: userEmail, username, is_ready: false, current_hp: 10, max_hp: 10 }]);
     subscribeToRoom(code);
     setLobbyModalVisible(true);
@@ -269,11 +258,22 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     await supabase.from('rooms').update({ status: 'selecting' }).eq('code', currentRoom.code);
   };
 
+  // --- CORREÇÃO PRINCIPAL: ENVIA O STATUS DO DESAFIO PARA A SALA ---
   const handleSelectCharacter = async (charId: string) => {
     if (!currentRoom) return;
-    await supabase.from('room_participants').update({ selected_character_id: charId, is_ready: true }).eq('room_code', currentRoom.code).eq('user_id', userId);
-    const existing = playedCharacters.find(p => p.game_characters.id === charId);
-    if (!existing) {
+    
+    // Pega o status local do usuário para este personagem
+    const rosterItem = playedCharacters.find(p => p.game_characters && p.game_characters.id === charId);
+    const isChallengeComplete = rosterItem?.challenge_completed || false;
+
+    // Salva na tabela room_participants para todos verem
+    await supabase.from('room_participants').update({ 
+        selected_character_id: charId, 
+        is_ready: true,
+        challenge_completed: isChallengeComplete // <--- AQUI ESTÁ A MÁGICA
+    }).eq('room_code', currentRoom.code).eq('user_id', userId);
+
+    if (!rosterItem) {
         await supabase.from('user_roster').insert({ user_id: userId, character_id: charId, current_level: 1 });
         fetchData(); 
     }
@@ -294,22 +294,12 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     try {
         const randomEvent = availableEvents[Math.floor(Math.random() * availableEvents.length)];
         const shuffled = [...participants].sort(() => Math.random() - 0.5);
-        
         for (let i = 0; i < shuffled.length; i++) {
             const selectedCharId = shuffled[i].selected_character_id;
             const charData = catalogChars.find(c => c.id === selectedCharId);
-            
-            let initialHp = 10;
+            let initialHp = charData?.category === 'equipe' ? 0 : (charData?.base_hp || 10);
             let initialShield = charData?.base_shield || 0;
-            let initialTeamState: TeamMemberState[] = [];
-
-            if (charData?.category === 'equipe') {
-                initialHp = 0; 
-                initialTeamState = []; 
-            } else {
-                initialHp = charData?.base_hp || 10;
-            }
-
+            
             await supabase.from('room_participants').update({ 
                 turn_order: i + 1, 
                 current_hp: initialHp, 
@@ -318,7 +308,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                 buffs: '', 
                 debuffs: '',
                 active_transformations: [],
-                team_state: initialTeamState, 
+                team_state: [], 
                 active_member_name: null      
             }).eq('id', shuffled[i].id);
         }
@@ -334,13 +324,14 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     setLobbyModalVisible(false); setCurrentRoom(null); setParticipants([]);
   };
 
-  // --- CRUD CHAR ---
   const openCreateCharModal = () => {
     setEditingCharId(null);
     setNewName(''); setNewOrigin(''); setNewClass(''); setNewImage(''); 
     setHpInput1('10'); setNewCategory('individual'); setTeamMembers([]); setMemberName(''); setMemberHp('');
     setHasShield(false); setShieldInput('0');
-    setPickedImageUri(''); setTempSkills([]); setCreateCharModalVisible(true);
+    setPickedImageUri(''); setTempSkills([]); 
+    setNewBanner(''); setPickedBannerUri('');
+    setCreateCharModalVisible(true);
   };
 
   const openEditCharModal = async (char: GameCharacterWithCreator) => {
@@ -350,6 +341,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     if (char.category === 'equipe') { setTeamMembers(char.team_members || []); setHpInput1('0'); } else { setHpInput1(String(char.base_hp)); }
     setHasShield((char.base_shield || 0) > 0);
     setShieldInput(String(char.base_shield || 0));
+    setNewBanner(char.challenge_banner_url || ''); setPickedBannerUri('');
     const { data: skills } = await supabase.from('character_skills').select('*').eq('character_id', char.id);
     if(skills) { setTempSkills(skills.map(s => ({ name: s.name, description: s.description, type: s.type as any, cost: s.cost || '', duration: s.duration || 0, shield_value: s.shield_value || 0 }))); } else { setTempSkills([]); }
     setLobbyModalVisible(false); setCreateCharModalVisible(true);
@@ -367,17 +359,18 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
     try {
         let finalImageUrl = newImage; 
         if (pickedImageUri) { const uploadedUrl = await uploadToSupabase(pickedImageUri); if (uploadedUrl) finalImageUrl = uploadedUrl; else throw new Error("Falha no upload da imagem"); }
+        let finalBannerUrl = newBanner;
+        if (pickedBannerUri) { const uploadedBannerUrl = await uploadToSupabase(pickedBannerUri); if (uploadedBannerUrl) finalBannerUrl = uploadedBannerUrl; else throw new Error("Falha no upload do banner"); }
         let finalHp = 10; let finalUnitCount = 1;
         if (newCategory === 'equipe') { finalHp = 0; finalUnitCount = teamMembers.length; if (teamMembers.length === 0) return Alert.alert("Erro", "Adicione membros."); } else if (newCategory === 'hit') { finalHp = parseInt(hpInput1) || 1; } else { finalHp = parseInt(hpInput1) || 10; }
-        const charPayload = { name: newName, anime_origin: newOrigin, base_class: newClass, image_url: finalImageUrl || null, base_hp: finalHp, category: newCategory, unit_count: finalUnitCount, team_members: newCategory === 'equipe' ? teamMembers : null, base_shield: hasShield ? (parseInt(shieldInput) || 0) : 0 };
+        const charPayload = { name: newName, anime_origin: newOrigin, base_class: newClass, image_url: finalImageUrl || null, challenge_banner_url: finalBannerUrl || null, base_hp: finalHp, category: newCategory, unit_count: finalUnitCount, team_members: newCategory === 'equipe' ? teamMembers : null, base_shield: hasShield ? (parseInt(shieldInput) || 0) : 0 };
         let charId = editingCharId;
         if(editingCharId) { await supabase.from('game_characters').update(charPayload).eq('id', editingCharId); await supabase.from('character_skills').delete().eq('character_id', editingCharId); } else { const { data, error } = await supabase.from('game_characters').insert(charPayload).select().single(); if (error) throw error; charId = data.id; }
-        if (charId && tempSkills.length > 0) { const skillsToInsert = tempSkills.map(s => ({ character_id: charId, name: s.name, description: s.description, type: s.type, cost: s.cost, duration: s.duration, shield_value: s.shield_value })); const { error: skillError } = await supabase.from('character_skills').insert(skillsToInsert); if (skillError) throw skillError; }
+        if (charId && tempSkills.length > 0) { const skillsToInsert = tempSkills.map(s => ({ character_id: charId, name: s.name, description: s.description, type: s.type, cost: s.cost, duration: s.duration, shield_value: s.shield_value || 0 })); const { error: skillError } = await supabase.from('character_skills').insert(skillsToInsert); if (skillError) throw skillError; }
         Alert.alert("Sucesso", "Personagem salvo!"); setCreateCharModalVisible(false); fetchCatalogs(); if(currentRoom) setLobbyModalVisible(true);
     } catch (e: any) { Alert.alert("Erro ao salvar", e.message); } finally { setSaving(false); setUploadingImage(false); }
   };
 
-  // --- CRUD EVENTOS/EFEITOS ---
   const openCreateEventModal = () => { setEditingEventId(null); setNewEventTitle(''); setNewEventDesc(''); setNewEventImage(''); setCreateEventModalVisible(true); };
   const openEditEventModal = (ev: GameEvent) => { setEditingEventId(ev.id); setNewEventTitle(ev.title); setNewEventDesc(ev.description); setNewEventImage(ev.image_url||''); setCreateEventModalVisible(true); }
   const handleSaveEvent = async () => { if(!newEventTitle) return; const p = {title:newEventTitle, description:newEventDesc, image_url:newEventImage||null}; if(editingEventId) await supabase.from('game_events').update(p).eq('id',editingEventId); else await supabase.from('game_events').insert(p); setCreateEventModalVisible(false); fetchCatalogs(); };
@@ -386,28 +379,30 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const openEditEffectModal = (eff: StatusEffect) => { setEditingEffectId(eff.id); setEffectTitle(eff.title); setEffectDesc(eff.description); setEffectType(eff.type); setEffectDamage(eff.damage || ''); setEffectDuration(String(eff.duration || '')); setCreateEffectModalVisible(true); };
   const handleSaveEffect = async () => { if(!effectTitle) return Alert.alert("Erro", "Título é obrigatório"); const p = { title: effectTitle, description: effectDesc, type: effectType, damage: effectType === 'debuff' ? effectDamage : null, duration: parseInt(effectDuration) || 0 }; if(editingEffectId) await supabase.from('game_status_effects').update(p).eq('id', editingEffectId); else await supabase.from('game_status_effects').insert(p); setCreateEffectModalVisible(false); fetchCatalogs(); };
   const deleteEffect = async(id:string) => { await supabase.from('game_status_effects').delete().eq('id',id); fetchCatalogs(); };
-  
   const getCategoryColor = (cat?: string) => { switch(cat) { case 'equipe': return '#FFD700'; case 'hit': return '#ff4444'; default: return '#00B37E'; } };
   const formatDuration = (seconds: number) => { const mins = Math.floor(seconds / 60); const secs = seconds % 60; return `${mins}m ${secs}s`; };
 
-  // --- RENDERIZAR CARD DO HISTÓRICO LOCAL ---
-  const renderPlayedChar = (item: UserRosterItem) => ( 
-    <TouchableOpacity key={item.id} style={styles.card} onPress={() => handleOpenDetails(item)}> 
-        {item.game_characters.image_url ? <Image source={{ uri: item.game_characters.image_url }} style={styles.charImage} /> : <View style={[styles.charIcon, { backgroundColor: '#3e2e6b' }]}><Text style={{fontSize: 20}}>⚔️</Text></View>} 
-        <View style={{flex: 1}}> 
-            <Text style={styles.cardTitle}>{item.game_characters.name}</Text> 
-            <View style={{flexDirection:'row', alignItems:'center'}}> 
-                <Text style={styles.cardSubtitle}>Nível {item.current_level} • {item.game_characters.base_class}</Text> 
-                <View style={{marginLeft: 8, paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getCategoryColor(item.game_characters.category), opacity: 0.8}}> 
-                    <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{item.game_characters.category?.toUpperCase() || 'IND.'}</Text> 
+  const renderPlayedChar = (item: UserRosterItem) => {
+    if (!item.game_characters) return null;
+    return ( 
+        <TouchableOpacity key={item.id} style={styles.card} onPress={() => handleOpenDetails(item)}> 
+            {item.game_characters.image_url ? <Image source={{ uri: item.game_characters.image_url }} style={styles.charImage} /> : <View style={[styles.charIcon, { backgroundColor: '#3e2e6b' }]}><Text style={{fontSize: 20}}>⚔️</Text></View>} 
+            <View style={{flex: 1}}> 
+                <Text style={styles.cardTitle}>{item.game_characters.name}</Text> 
+                <View style={{flexDirection:'row', alignItems:'center'}}> 
+                    <Text style={styles.cardSubtitle}>Nível {item.current_level} • {item.game_characters.base_class}</Text> 
+                    <View style={{marginLeft: 8, paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getCategoryColor(item.game_characters.category), opacity: 0.8}}> 
+                        <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{item.game_characters.category?.toUpperCase() || 'IND.'}</Text> 
+                    </View> 
                 </View> 
             </View> 
-        </View> 
-    </TouchableOpacity> 
-  );
+        </TouchableOpacity> 
+    );
+  };
 
   return (
     <View style={styles.container}>
+      {/* ... (Todo o restante do JSX permanece exatamente igual ao anterior, sem mudanças visuais necessárias aqui) ... */}
       <View style={styles.header}>
           <View>
               <Text style={styles.greeting}>Olá, {username}</Text>
@@ -525,7 +520,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
           </View>
       </Modal>
 
-      {/* --- NOVO: MODAL DE HISTÓRICO --- */}
+      {/* MODAL HISTORY */}
       <Modal animationType="slide" transparent={true} visible={historyModalVisible} onRequestClose={() => setHistoryModalVisible(false)}>
         <View style={styles.modalOverlay}>
             <View style={[styles.modalContent, {maxHeight: '80%'}]}>
@@ -616,8 +611,21 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     {pickedImageUri ? <Image source={{ uri: pickedImageUri }} style={styles.imagePreview} /> : newImage ? <Image source={{ uri: newImage }} style={styles.imagePreview} /> : <View style={{alignItems:'center'}}><Ionicons name="image-outline" size={40} color="#777" /><Text style={{color:'#777', marginTop:5}}>Toque para selecionar</Text></View>}
                 </TouchableOpacity>
 
+                <Text style={[styles.sectionHeader, {marginTop:20}]}>BANNER DE DESAFIO (Para Mestres)</Text>
+                <TouchableOpacity onPress={pickBanner} style={[styles.imagePickerBtn, {height: 100}]}>
+                    {pickedBannerUri ? 
+                        <Image source={{ uri: pickedBannerUri }} style={styles.imagePreview} /> : 
+                        newBanner ? <Image source={{ uri: newBanner }} style={styles.imagePreview} /> : 
+                        <View style={{alignItems:'center'}}>
+                            <Ionicons name="flag-outline" size={30} color="#777" />
+                            <Text style={{color:'#777', marginTop:5}}>Selecionar Banner</Text>
+                        </View>
+                    }
+                </TouchableOpacity>
+
                 <Text style={[styles.sectionHeader, {marginTop:20}]}>ADICIONAR HABILIDADE / TRANSFORMAÇÃO</Text>
                 <View style={styles.skillForm}>
+                    {/* ... (inputs de skills, igual ao anterior) ... */}
                     <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Nome Skill" placeholderTextColor="#555" value={skillName} onChangeText={setSkillName}/>
                     <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Descrição" placeholderTextColor="#555" value={skillDesc} onChangeText={setSkillDesc}/>
                     
@@ -770,7 +778,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                               </View>
                           </View>
 
-                          {/* --- NOVO: CHECKBOX DE DESAFIO DO PERSONAGEM --- */}
+                          {/* --- CHECKBOX DE DESAFIO DO PERSONAGEM --- */}
                           <View style={{flexDirection:'row', alignItems:'center', marginTop:20, backgroundColor:'#222', padding:10, borderRadius:8, width:'100%'}}>
                               <Text style={{color:'#fff', flex:1, fontSize:14, marginRight:10}}>Desafio do Personagem Concluído?</Text>
                               <TouchableOpacity onPress={() => handleToggleChallenge(selectedCharacter)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: selectedCharacter.challenge_completed ? '#00B37E' : 'transparent'}}>
@@ -793,6 +801,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
 }
 
 const styles = StyleSheet.create({
+  // ... estilos existentes
   container: { flex: 1, backgroundColor: '#121214', paddingTop: 50 },
   scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
   header: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 30, paddingHorizontal: 20 },
@@ -855,10 +864,7 @@ const styles = StyleSheet.create({
   skillRow: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', padding:10, borderBottomWidth:1, borderBottomColor:'#333' },
   imagePickerBtn: { width:'100%', height:150, backgroundColor:'#222', borderRadius:8, alignItems:'center', justifyContent:'center', borderStyle:'dashed', borderWidth:1, borderColor:'#555', marginBottom:20 },
   imagePreview: { width:'100%', height:'100%', borderRadius:8, resizeMode:'cover' },
-  
   historyCard: { backgroundColor: '#202024', padding: 15, borderRadius: 12, marginBottom: 15, borderLeftWidth: 4, borderLeftColor: '#FFD700' },
-  
-  // ESTILOS DE ESTATÍSTICAS
   statsRow: { flexDirection:'row', justifyContent:'space-around', width:'100%', marginTop:25 },
   statBox: { alignItems:'center', backgroundColor:'#222', padding:10, borderRadius:8, width:'30%' },
   statValue: { color:'#fff', fontWeight:'bold', fontSize:18, marginTop:5 },
