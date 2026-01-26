@@ -1,8 +1,7 @@
-// src/screens/GameScreen.tsx
 import React, { useEffect, useState, useRef } from 'react';
 import { 
-  View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, 
-  Alert, Image, ActivityIndicator, Modal, FlatList, ImageBackground 
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, 
+  Alert, Image, ActivityIndicator, Modal, FlatList 
 } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { Room, RoomParticipant, GameCharacter, GameEvent, CharacterSkill, ActiveTransformation, StatusEffect, ActiveStatusEffect, TeamMember, TeamMemberState, MatchHistoryItem } from '../types/rpg';
@@ -23,7 +22,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   
   const [mySkills, setMySkills] = useState<CharacterSkill[]>([]);
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
-  
+  const [challengesCompletedMap, setChallengesCompletedMap] = useState<Record<string, boolean>>({});
+
   // MODAIS
   const [skillsModalVisible, setSkillsModalVisible] = useState(false);
   const [effectsListModalVisible, setEffectsListModalVisible] = useState(false);
@@ -80,7 +80,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     }
   }, [myParticipant, charactersMap, initialCheckDone]);
 
-  // DETECTAR VITÓRIA
   useEffect(() => {
       if (!participants || participants.length === 0 || !myParticipant) return;
       const survivors = participants.filter(p => p.current_hp > 0);
@@ -130,6 +129,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         if (roomError) throw roomError;
         if (!roomData) { Alert.alert("Erro", "Sala não encontrada."); onExitGame(); return; }
         setRoom(roomData);
+        
         if (roomData.current_turn_participant_id) checkTurnChange(roomData.current_turn_participant_id);
         if (roomData.selected_event_id && roomData.selected_event_id !== currentEventIdRef.current) {
             const { data: ev } = await supabase.from('game_events').select('*').eq('id', roomData.selected_event_id).maybeSingle();
@@ -140,9 +140,31 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
             const { data: effs } = await supabase.from('game_status_effects').select('*').order('title');
             if (effs) setCatalogEffects(effs);
         }
+        
         const { data: parts } = await supabase.from('room_participants').select('*').eq('room_code', roomCode).order('turn_order', { ascending: true });
+        
         if (parts) {
             setParticipants(parts);
+
+            const userIds = parts.map(p => p.user_id);
+            const charIds = parts.map(p => p.selected_character_id).filter(id => id);
+            
+            if (userIds.length > 0 && charIds.length > 0) {
+                const { data: rosterData } = await supabase
+                    .from('user_roster')
+                    .select('user_id, character_id, challenge_completed')
+                    .in('user_id', userIds)
+                    .in('character_id', charIds as string[]);
+                
+                if (rosterData) {
+                    const map: Record<string, boolean> = {};
+                    rosterData.forEach(r => {
+                        map[`${r.user_id}_${r.character_id}`] = r.challenge_completed || false;
+                    });
+                    setChallengesCompletedMap(map);
+                }
+            }
+
             const me = parts.find(p => p.user_id === userId);
             if (me) {
                 setMyParticipant(me);
@@ -321,7 +343,9 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const activeUnits = myParticipant.team_state || [];
 
   const getNotifyColor = () => { switch(notificationData.type) { case 'victory': return '#FFD700'; case 'damage': return '#ff4444'; default: return '#8257e5'; } };
-  const showBanner = (myParticipant.challenge_completed === true) && myChar?.challenge_banner_url;
+  
+  // Lógica Robusta: Tenta usar o valor da sala OU o valor do mapa de backup
+  const myBannerActive = (myParticipant.challenge_completed || challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`]) && myChar?.challenge_banner_url;
 
   return (
     <View style={styles.container}>
@@ -342,12 +366,17 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         
-        {/* BANNER PRINCIPAL (MANTIDO AS BOXES TRANSLÚCIDAS) */}
-        <View style={[styles.charArea, !showBanner && {backgroundColor: '#2A2A2E'}]}>
-            {showBanner && (
+        {/* BANNER PRINCIPAL DO JOGADOR (MANTIDO) */}
+        <View style={[styles.charArea, !myBannerActive && {backgroundColor: '#2A2A2E'}]}>
+            {/* Camada 1: Imagem */}
+            {myBannerActive && (
                 <Image source={{ uri: myChar.challenge_banner_url }} style={styles.bannerBackground} resizeMode="cover" />
             )}
             
+            {/* Camada 2: Overlay Escuro */}
+            {myBannerActive && <View style={styles.bannerOverlay} />}
+
+            {/* Camada 3: Conteúdo */}
             <View style={styles.charImageContainer}>
                 {myChar?.image_url ? (
                     <Image source={{ uri: myChar.image_url }} style={styles.charImage} />
@@ -360,7 +389,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 <View style={[styles.textBox, { marginBottom: 5 }]}>
                     <Text style={styles.charName}>{myChar?.name || 'Unknown'}</Text>
                 </View>
-                {myParticipant.challenge_completed === true && (
+                
+                {myBannerActive && (
                      <View style={[styles.textBox, {backgroundColor: 'rgba(255, 215, 0, 0.2)', borderWidth:1, borderColor:'#FFD700', marginBottom:2}]}>
                         <View style={{flexDirection:'row', alignItems:'center'}}>
                             <Ionicons name="trophy" size={10} color="#FFD700" style={{marginRight:4}}/>
@@ -368,6 +398,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                         </View>
                      </View>
                 )}
+
                 <View style={{flexDirection:'row', flexWrap:'wrap'}}>
                     <View style={styles.textBox}>
                         <Text style={styles.playerNameTag}>({myParticipant.username})</Text>
@@ -508,77 +539,55 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         {participants.map(p => {
            const pChar = p.selected_character_id ? charactersMap[p.selected_character_id] : null;
            const isCurrent = room.current_turn_participant_id === p.id;
-           const showRowBanner = (p.challenge_completed === true) && pChar?.challenge_banner_url;
+           
+           // Usa a chave única para verificar se este jogador específico completou o desafio deste char
+           const showRowBanner = (p.challenge_completed || challengesCompletedMap[`${p.user_id}_${p.selected_character_id}`]) && pChar?.challenge_banner_url;
 
-           if (showRowBanner) {
-               // RENDERIZAÇÃO QUANDO TEM BANNER (USANDO ImageBackground)
-               return (
-                   <ImageBackground 
-                       key={p.id}
-                       source={{ uri: pChar?.challenge_banner_url }} 
-                       style={[styles.participantRow, isCurrent ? styles.activeRowBorder : {}]}
-                       imageStyle={{ opacity: 1, borderRadius: 12 }} // Imagem plena
-                       resizeMode="cover"
-                   >
-                       {/* CAMADA PRETA SEMI-TRANSPARENTE PARA GARANTIR LEITURA */}
-                       <View style={styles.darkOverlay} />
+           return (
+               // CONTAINER DO GRUPO (VOLTANDO AO BÁSICO: VIEW COM LAYERS PARA EVITAR BUGS)
+               <View key={p.id} style={[styles.participantRow, isCurrent ? styles.activeRowBorder : {}, !showRowBanner && {backgroundColor: '#202024'}]}>
+                   
+                   {/* LAYER 1: BANNER */}
+                   {showRowBanner && (
+                        <Image source={{ uri: pChar?.challenge_banner_url }} style={styles.rowBannerBackground} resizeMode="cover" />
+                   )}
 
-                       {/* CONTEÚDO (TEXTOS) */}
-                       <View style={{flex: 1}}>
-                            <View style={{flexDirection:'row', alignItems:'center'}}>
-                                {isCurrent && <Ionicons name="caret-forward" color="#FFD700" size={16} style={{marginRight: 5}} />}
-                                <Text style={[styles.pName, {color: isCurrent ? '#FFD700' : '#FFF'}]}>{p.username}</Text>
-                            </View>
-                            <Text style={[styles.pSubName, {color:'#DDD'}]}>
-                                {pChar?.name} 
-                                {pChar?.category === 'equipe' && ` (${p.team_state?.length || 0} unidades)`}
-                            </Text>
-                            {(p.current_shield || 0) > 0 && (<Text style={{color:'#29B6F6', fontSize:10, fontWeight:'bold', marginTop:2}}>🛡️ {p.current_shield}</Text>)}
-                            <View style={{flexDirection:'row', flexWrap:'wrap', marginTop:2}}>
-                               {p.active_transformations?.map((t, idx) => (<Text key={`t-${idx}`} style={{color:'#FFD700', fontSize:10, marginRight:5}}>★ {t.name}</Text>))}
-                               {p.active_buffs?.map((b, idx) => (<Text key={`b-${idx}`} style={{color:'#00B37E', fontSize:10, marginRight:5}}>↑ {b.name}</Text>))}
-                               {p.active_debuffs?.map((d, idx) => (<Text key={`d-${idx}`} style={{color:'#ff4444', fontSize:10, marginRight:5}}>↓ {d.name}</Text>))}
-                           </View>
+                   {/* LAYER 2: OVERLAY PRETO */}
+                   {showRowBanner && (
+                        <View style={styles.rowBannerOverlay} />
+                   )}
+
+                   {/* LAYER 3: CONTEÚDO */}
+                   <View style={{flex: 1}}>
+                       <View style={{flexDirection:'row', alignItems:'center'}}>
+                           {isCurrent && <Ionicons name="caret-forward" color="#FFD700" size={16} style={{marginRight: 5}} />}
+                           <Text style={[styles.pName, {color: isCurrent ? '#FFD700' : '#FFF'}]}>{p.username}</Text>
                        </View>
 
-                       <View style={{alignItems:'center'}}>
-                           {(p.active_debuffs && p.active_debuffs.length > 0) && <Ionicons name="skull" color="#ff4444" size={12} style={{marginBottom: 2}} />}
-                           <Text style={[styles.pHp, p.current_hp === 0 ? {color:'#ff4444'} : {color:'#FFF'}]}>{p.current_hp}/{p.max_hp}</Text>
-                       </View>
-                   </ImageBackground>
-               );
-           } else {
-               // RENDERIZAÇÃO PADRÃO (SEM BANNER)
-               return (
-                   <View key={p.id} style={[styles.participantRow, isCurrent ? styles.activeRowBorder : {}, {backgroundColor: '#202024'}]}>
-                       <View style={{flex: 1}}>
-                            <View style={{flexDirection:'row', alignItems:'center'}}>
-                                {isCurrent && <Ionicons name="caret-forward" color="#FFD700" size={16} style={{marginRight: 5}} />}
-                                <Text style={[styles.pName, {color: isCurrent ? '#FFD700' : '#FFF'}]}>{p.username}</Text>
-                            </View>
-                            <Text style={[styles.pSubName, {color:'#DDD'}]}>
-                                {pChar?.name} 
-                                {pChar?.category === 'equipe' && ` (${p.team_state?.length || 0} unidades)`}
-                            </Text>
-                            {(p.current_shield || 0) > 0 && (<Text style={{color:'#29B6F6', fontSize:10, fontWeight:'bold', marginTop:2}}>🛡️ {p.current_shield}</Text>)}
-                            <View style={{flexDirection:'row', flexWrap:'wrap', marginTop:2}}>
-                               {p.active_transformations?.map((t, idx) => (<Text key={`t-${idx}`} style={{color:'#FFD700', fontSize:10, marginRight:5}}>★ {t.name}</Text>))}
-                               {p.active_buffs?.map((b, idx) => (<Text key={`b-${idx}`} style={{color:'#00B37E', fontSize:10, marginRight:5}}>↑ {b.name}</Text>))}
-                               {p.active_debuffs?.map((d, idx) => (<Text key={`d-${idx}`} style={{color:'#ff4444', fontSize:10, marginRight:5}}>↓ {d.name}</Text>))}
-                           </View>
-                       </View>
+                       <Text style={[styles.pSubName, {color:'#DDD'}]}>
+                           {pChar?.name} 
+                           {pChar?.category === 'equipe' && ` (${p.team_state?.length || 0} unidades)`}
+                       </Text>
 
-                       <View style={{alignItems:'center'}}>
-                           {(p.active_debuffs && p.active_debuffs.length > 0) && <Ionicons name="skull" color="#ff4444" size={12} style={{marginBottom: 2}} />}
-                           <Text style={[styles.pHp, p.current_hp === 0 ? {color:'#ff4444'} : {color:'#FFF'}]}>{p.current_hp}/{p.max_hp}</Text>
+                       {(p.current_shield || 0) > 0 && (<Text style={{color:'#29B6F6', fontSize:10, fontWeight:'bold', marginTop:2}}>🛡️ {p.current_shield}</Text>)}
+                       
+                       <View style={{flexDirection:'row', flexWrap:'wrap', marginTop:2}}>
+                           {p.active_transformations?.map((t, idx) => (<Text key={`t-${idx}`} style={{color:'#FFD700', fontSize:10, marginRight:5}}>★ {t.name}</Text>))}
+                           {p.active_buffs?.map((b, idx) => (<Text key={`b-${idx}`} style={{color:'#00B37E', fontSize:10, marginRight:5}}>↑ {b.name}</Text>))}
+                           {p.active_debuffs?.map((d, idx) => (<Text key={`d-${idx}`} style={{color:'#ff4444', fontSize:10, marginRight:5}}>↓ {d.name}</Text>))}
                        </View>
                    </View>
-               );
-           }
+                   
+                   <View style={{alignItems:'center', justifyContent:'center', minWidth:40}}>
+                       {(p.active_debuffs && p.active_debuffs.length > 0) && <Ionicons name="skull" color="#ff4444" size={12} style={{marginBottom: 2}} />}
+                       <Text style={[styles.pHp, p.current_hp === 0 ? {color:'#ff4444'} : {color:'#FFF'}]}>{p.current_hp}/{p.max_hp}</Text>
+                   </View>
+               </View>
+           )
         })}
       </ScrollView>
 
-      {/* FOOTER */}
+      {/* FOOTER, MODAIS... (MANTIDOS IGUAIS) */}
       <View style={styles.footer}>
         {isMyTurn ? (
             <TouchableOpacity style={[styles.passTurnButton, {backgroundColor: getPhaseColor(currentPhase)}]} onPress={handlePhaseAction} disabled={processingPhase}>
@@ -666,7 +675,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                     ) : (
                         <>
                             {mySkills.length === 0 && <Text style={{color:'#777', textAlign:'center', marginTop: 20}}>Nenhuma habilidade aprendida.</Text>}
-                            {/* ... (Renderização normal para individual) ... */}
                             {mySkills.map((s, idx) => (
                                 <TouchableOpacity key={idx} style={styles.cardItem} onPress={() => activateSkill(s)}>
                                     <View style={{flex:1}}><Text style={styles.cardName}>{s.name}</Text><Text style={styles.cardDesc}>{s.description} • {s.cost || '-'}</Text></View>
@@ -723,7 +731,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#121214', paddingTop: 50 },
   loading: { flex: 1, backgroundColor: '#121214', justifyContent:'center', alignItems:'center' },
-  scrollContent: { padding: 20, paddingBottom: 220 }, 
+  // AUMENTADO PARA 180 PARA O RODAPÉ NÃO TAPAR O FIM DA LISTA
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 180 }, 
   turnHeader: { backgroundColor: '#202024', paddingHorizontal: 15, paddingBottom: 10, paddingTop: 35, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#333', flexDirection:'row', justifyContent:'space-between' },
   myTurnHeader: { backgroundColor: '#3e2e6b', borderBottomColor: '#8257e5' },
   turnText: { color: '#fff', fontSize: 14, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 1 },
@@ -747,6 +756,12 @@ const styles = StyleSheet.create({
       opacity: 0.6, 
       zIndex: -1, 
   },
+  
+  bannerOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: 'rgba(0,0,0,0.06)', 
+      zIndex: -1,
+  },
 
   charImageContainer: {
       width: 80,
@@ -757,7 +772,6 @@ const styles = StyleSheet.create({
   charImage: { width: 80, height: 80, borderRadius: 40, borderWidth: 2, borderColor: '#8257e5' },
   charPlaceholder: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#333', alignItems: 'center', justifyContent: 'center' },
   
-  // CAIXA DE TEXTO (TEXT BOX) - USADA NO BANNER PRINCIPAL
   textBox: {
       backgroundColor: 'rgba(0,0,0,0.7)', 
       paddingVertical: 4,
@@ -778,7 +792,7 @@ const styles = StyleSheet.create({
   hpValue: { color: '#fff', fontSize: 42, fontWeight: 'bold' },
   sectionTitle: { color: '#fff', fontSize: 18, marginTop: 20, marginBottom: 10, fontWeight:'bold', borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 5 },
   
-  // LINHA DE PARTICIPANTE COM BANNER (AJUSTADO E LIMPO)
+  // LINHA DE PARTICIPANTE (GRUPO)
   participantRow: { 
       flexDirection: 'row', 
       justifyContent: 'space-between', 
@@ -788,22 +802,24 @@ const styles = StyleSheet.create({
       borderRadius: 12,
       overflow: 'hidden',
       borderWidth: 1,
-      borderColor: '#333'
+      borderColor: '#333',
+      position: 'relative'
   },
   
   activeRowBorder: {
-      borderColor: '#FFD700', // Apenas borda dourada para indicar turno
+      borderColor: '#FFD700',
       borderWidth: 2,
   },
   
   rowBannerBackground: {
       ...StyleSheet.absoluteFillObject,
-      // Nenhuma opacidade aqui na imagem em si, controlamos no overlay
+      zIndex: -2,
   },
 
   rowBannerOverlay: {
       ...StyleSheet.absoluteFillObject,
-      backgroundColor: 'rgba(0,0,0,0.6)', // Overlay escuro por cima da imagem
+      backgroundColor: 'rgba(0,0,0,0.6)', 
+      zIndex: -1,
   },
   
   // ESTILOS DE TEXTO GARANTIDOS (Branco ou Dourado)

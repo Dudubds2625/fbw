@@ -297,7 +297,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
             const charData = catalogChars.find(c => c.id === selectedCharId);
             let initialHp = 10;
             let initialShield = charData?.base_shield || 0;
-            let initialTeamState: TeamMemberState[] = [];
+            let initialTeamState: TeamMember[] = [];
 
             if (charData?.category === 'equipe') { initialHp = 0; initialTeamState = []; } 
             else { initialHp = charData?.base_hp || 10; }
