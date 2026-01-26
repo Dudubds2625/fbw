@@ -1,20 +1,25 @@
 // src/types/rpg.ts
 
 export interface CharacterSkill {
-  id: string; // Pode ser um ID gerado ou UUID
-  character_id?: string; // Opcional, pois no JSON de equipe não tem FK direta
+  id: string; 
+  character_id?: string;
   name: string;
   description: string;
   type: 'active' | 'passive' | 'transformation';
+  
+  // SUBTIPOS
+  passive_type?: 'general' | 'individual' | 'transformed'; 
+  active_type?: 'general' | 'individual' | 'transformed'; // <--- NOVO CAMPO
+
   cost?: string;
-  duration?: number; // Em rodadas
+  duration?: number;
   shield_value?: number;
 }
 
 export interface TeamMember {
   name: string;
   base_hp: number;
-  skills?: CharacterSkill[]; // <--- LISTA DE HABILIDADES DO MEMBRO
+  skills?: CharacterSkill[]; 
 }
 
 export interface GameCharacter {
@@ -23,12 +28,12 @@ export interface GameCharacter {
   anime_origin: string;
   base_class: string;
   image_url?: string;
-  challenge_banner_url?: string; // Banner de Desafio
+  challenge_banner_url?: string;
   created_by?: string;
   base_hp: number;
   category?: 'individual' | 'equipe' | 'hit';
   unit_count?: number; 
-  team_members?: TeamMember[]; // Array de membros (com skills dentro)
+  team_members?: TeamMember[]; 
   base_shield?: number;
 }
 
@@ -114,7 +119,7 @@ export interface RoomParticipant {
   debuffs?: string;
   team_state?: TeamMemberState[];
   active_member_name?: string;
-  challenge_completed?: boolean; // Status do desafio na sala
+  challenge_completed?: boolean;
 }
 
 export interface UserRosterItem {
@@ -124,5 +129,5 @@ export interface UserRosterItem {
   current_level: number;
   acquired_at: string;
   challenge_completed?: boolean;
-  game_characters?: GameCharacter; // Pode vir nulo se deletado
+  game_characters?: GameCharacter;
 }
