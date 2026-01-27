@@ -21,10 +21,10 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const [myParticipant, setMyParticipant] = useState<RoomParticipant | null>(null);
   const [charactersMap, setCharactersMap] = useState<Record<string, GameCharacter>>({});
   
-  // STATES DE SKILLS E NIVEL
+  // STATES GERAIS
   const [allRawSkills, setAllRawSkills] = useState<CharacterSkill[]>([]);
   const [mySkills, setMySkills] = useState<CharacterSkill[]>([]);
-  const [currentLevel, setCurrentLevel] = useState(1);
+  const [currentLevel, setCurrentLevel] = useState(1); 
 
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
   const [challengesCompletedMap, setChallengesCompletedMap] = useState<Record<string, boolean>>({});
@@ -68,7 +68,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     return () => { if (channelRef.current) supabase.removeChannel(channelRef.current); };
   }, []);
 
-  // --- FILTRO DE SKILLS POR NÍVEL ---
+  // --- FILTRO DE SKILLS INDIVIDUAIS POR NÍVEL ---
   useEffect(() => {
       if (allRawSkills.length > 0) {
           const unlocked = allRawSkills.filter(s => (s.unlock_level || 1) <= currentLevel);
@@ -76,12 +76,11 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       }
   }, [currentLevel, allRawSkills]);
 
-  // --- CHECAGEM INICIAL SEGURA ---
+  // --- CHECAGEM INICIAL ---
   useEffect(() => {
     if (!myParticipant) return;
     const myCharId = myParticipant.selected_character_id;
     if (!myCharId) return;
-
     const myChar = charactersMap[myCharId];
     if (!myChar) return; 
 
@@ -96,7 +95,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     }
   }, [myParticipant, charactersMap, initialCheckDone]);
 
-  // --- AUTOMATIZAÇÃO DE PASSIVAS (ATUALIZADA COM O FILTRO DE NIVEL) ---
+  // --- AUTOMATIZAÇÃO DE PASSIVAS ---
   useEffect(() => {
     if (myParticipant && room && initialCheckDone) {
         checkAndApplyPassives();
@@ -106,32 +105,38 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       myParticipant?.active_transformations, 
       initialCheckDone, 
       myParticipant?.selected_character_id,
-      mySkills // Importante: Se o nível subir e desbloquear skill, roda isso
+      mySkills
   ]);
 
+  const activeUnits = (myParticipant?.team_state as TeamMemberState[]) || [];
+  const myChar = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
+  const reserveMembers = (myChar?.team_members || []).filter(m => !activeUnits.some(u => u.name === m.name));
+
   const checkAndApplyPassives = async () => {
-      if (!myParticipant) return;
-      const myChar = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
-      if (!myChar) return;
+      if (!myParticipant || !myChar) return;
 
       const isTransformed = (myParticipant.active_transformations?.length || 0) > 0;
-      const activeUnitNames = myParticipant.team_state?.map(u => u.name) || [];
       const currentBuffs = myParticipant.active_buffs || [];
       const temporaryBuffs = currentBuffs.filter(b => b.duration !== -1);
       const newPassivesMap = new Map<string, ActiveStatusEffect>();
 
-      const evaluateSkill = (skill: CharacterSkill, memberName?: string) => {
+      const evaluateSkill = (skill: CharacterSkill, memberState?: TeamMemberState) => {
           if (skill.type !== 'passive') return;
+
+          if (myChar.category === 'equipe' && memberState) {
+              const reqLevel = skill.unlock_level || 1;
+              const memLevel = memberState.current_level || 1;
+              if (memLevel < reqLevel) return; 
+          }
+
           const pType = skill.passive_type; 
-          
           let isOwnerActive = true;
-          if (myChar.category === 'equipe' && memberName) {
-              isOwnerActive = activeUnitNames.includes(memberName);
+          if (myChar.category === 'equipe' && memberState) {
+              isOwnerActive = activeUnits.some(u => u.name === memberState.name);
           }
 
           let shouldBeActive = false;
 
-          // Exclusividade
           if (isTransformed) {
               if (pType === 'transformed') shouldBeActive = isOwnerActive;
               else if (pType === 'general_transformed') shouldBeActive = true;
@@ -145,7 +150,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
           if (shouldBeActive) {
               const isGen = (pType === 'general' || pType === 'general_transformed');
-              const prefix = isGen ? '[GERAL]' : (memberName ? `[${memberName}]` : '');
+              const prefix = isGen ? '[GERAL]' : (memberState ? `[${memberState.name}]` : '');
               const transfTag = (pType === 'transformed' || pType === 'general_transformed') ? ' (Transf.)' : '';
               const buffName = `${prefix} ${skill.name}${transfTag}`.trim();
               
@@ -156,7 +161,12 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       };
 
       if (myChar.category === 'equipe' && myChar.team_members) {
-          myChar.team_members.forEach(m => m.skills?.forEach(s => evaluateSkill(s, m.name)));
+          myChar.team_members.forEach(m => {
+              const mState = activeUnits.find(u => u.name === m.name);
+              if (mState) {
+                  m.skills?.forEach(s => evaluateSkill(s, mState));
+              }
+          });
       } else if (mySkills.length > 0) {
           mySkills.forEach(s => evaluateSkill(s));
       }
@@ -172,13 +182,74 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       }
   };
 
-  // --- FUNÇÃO DE LEVEL UP/DOWN ---
   const handleLevelChange = async (delta: number) => {
       const newLevel = Math.max(1, currentLevel + delta);
       if (newLevel === currentLevel) return;
-
       setCurrentLevel(newLevel);
       await supabase.from('room_participants').update({ current_level: newLevel }).eq('id', myParticipant?.id);
+  };
+
+  const changeUnitLevel = async (index: number, delta: number) => {
+      if (!myParticipant || !myParticipant.team_state) return;
+      const newState = [...myParticipant.team_state];
+      const unit = { ...newState[index] };
+      const currentLvl = unit.current_level || 1;
+      const newLvl = Math.max(1, currentLvl + delta);
+      if (newLvl === currentLvl) return;
+      unit.current_level = newLvl;
+      newState[index] = unit;
+      await supabase.from('room_participants').update({ team_state: newState }).eq('id', myParticipant.id);
+  };
+
+  const changeUnitHp = async (index: number, amount: number) => {
+      if (!myParticipant || !myParticipant.team_state) return;
+      const newState = [...myParticipant.team_state];
+      const unit = { ...newState[index] }; 
+      unit.current_hp = Math.max(0, Math.min(unit.max_hp, unit.current_hp + amount));
+      
+      if (unit.current_hp <= 0) { 
+          newState.splice(index, 1); 
+      } else { 
+          newState[index] = unit; 
+      }
+      
+      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
+      const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0); 
+      
+      await supabase.from('room_participants').update({ 
+          team_state: newState, 
+          current_hp: totalHp, 
+          max_hp: totalMaxHp 
+      }).eq('id', myParticipant.id);
+  };
+
+  const changeUnitMaxHp = async (index: number, amount: number) => {
+      if (!myParticipant || !myParticipant.team_state) return;
+      const newState = [...myParticipant.team_state];
+      const unit = { ...newState[index] }; 
+      const newMax = Math.max(1, unit.max_hp + amount);
+      unit.max_hp = newMax;
+      if (unit.current_hp > newMax) { unit.current_hp = newMax; }
+      newState[index] = unit;
+      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
+      const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0); 
+      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
+  };
+
+  const handleAddMemberToField = async (member: TeamMember) => {
+      if (!myParticipant) return;
+      const currentState = [...(myParticipant.team_state || [])];
+      const newUnit: TeamMemberState = { 
+          name: member.name, 
+          current_hp: member.base_hp, 
+          max_hp: member.base_hp, 
+          current_level: 1 
+      };
+      const newState = [...currentState, newUnit];
+      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
+      const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0);
+      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
+      setDeployMemberModalVisible(false);
   };
 
   const showCustomAlert = (title: string, message: string, type: 'info'|'damage'|'victory' = 'info', onConfirm?: () => void, hasCancel = false, onCancel?: () => void, confirmText = 'CONFIRMAR', cancelText = 'CANCELAR') => {
@@ -198,31 +269,22 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const handleConfirmVictory = async () => {
       if (!myParticipant || !room) return;
       const myCharId = myParticipant.selected_character_id;
-      const myChar = myCharId ? charactersMap[myCharId] : null;
+      const myCharLocal = myCharId ? charactersMap[myCharId] : null;
       try {
           const createdTime = new Date(room.created_at).getTime();
           const endTime = new Date().getTime();
           const durationSeconds = Math.floor((endTime - createdTime) / 1000);
           await supabase.from('victories').insert({ 
-              user_id: userId,
-              character_name: myChar?.name || myParticipant.username, 
-              session_name: roomCode, 
-              victory_date: new Date().toISOString()
+              user_id: userId, character_name: myCharLocal?.name || myParticipant.username, session_name: roomCode, victory_date: new Date().toISOString()
           });
           await supabase.from('match_history').insert({
-              room_code: roomCode,
-              winner_name: myParticipant.username,
-              winner_character: myChar?.name || 'Desconhecido',
-              duration_seconds: durationSeconds,
-              participants_snapshot: participants 
+              room_code: roomCode, winner_name: myParticipant.username, winner_character: myCharLocal?.name || 'Desconhecido', duration_seconds: durationSeconds, participants_snapshot: participants 
           });
           if (myCharId) {
               const { error: levelError } = await supabase.rpc('increment_char_level', { uid: userId, char_id: myCharId });
               if (levelError) {
                   const { data: roster } = await supabase.from('user_roster').select('current_level').eq('user_id', userId).eq('character_id', myCharId).single();
-                  if (roster) {
-                      await supabase.from('user_roster').update({ current_level: roster.current_level + 1 }).eq('user_id', userId).eq('character_id', myCharId);
-                  }
+                  if (roster) { await supabase.from('user_roster').update({ current_level: roster.current_level + 1 }).eq('user_id', userId).eq('character_id', myCharId); }
               }
           }
           showCustomAlert("🏆 Lenda!", "Vitória registrada! Nível Subiu!", 'victory', handleLeaveRoom);
@@ -251,22 +313,14 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         
         if (parts) {
             setParticipants(parts);
-
             const userIds = parts.map(p => p.user_id);
             const charIds = parts.map(p => p.selected_character_id).filter(id => id);
             
             if (userIds.length > 0 && charIds.length > 0) {
-                const { data: rosterData } = await supabase
-                    .from('user_roster')
-                    .select('user_id, character_id, challenge_completed')
-                    .in('user_id', userIds)
-                    .in('character_id', charIds as string[]);
-                
+                const { data: rosterData } = await supabase.from('user_roster').select('user_id, character_id, challenge_completed').in('user_id', userIds).in('character_id', charIds as string[]);
                 if (rosterData) {
                     const map: Record<string, boolean> = {};
-                    rosterData.forEach(r => {
-                        map[`${r.user_id}_${r.character_id}`] = r.challenge_completed || false;
-                    });
+                    rosterData.forEach(r => { map[`${r.user_id}_${r.character_id}`] = r.challenge_completed || false; });
                     setChallengesCompletedMap(map);
                 }
             }
@@ -280,7 +334,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 if (me.buffs !== buffs) setBuffs(me.buffs || '');
                 if (me.debuffs !== debuffs) setDebuffs(me.debuffs || '');
 
-                // CARREGAR NÍVEL DA SALA
                 const roomLvl = me.current_level || 1;
                 if (roomLvl !== currentLevel) setCurrentLevel(roomLvl);
 
@@ -328,9 +381,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     setProcessingPhase(true);
     try {
         const currentPhase = room.turn_phase || 'initial';
-        if (currentPhase === 'initial') {
-            await supabase.from('rooms').update({ turn_phase: 'main' }).eq('code', roomCode);
-        } else if (currentPhase === 'main') {
+        if (currentPhase === 'initial') { await supabase.from('rooms').update({ turn_phase: 'main' }).eq('code', roomCode); } 
+        else if (currentPhase === 'main') {
             await processEndTurnLogic(); 
             await supabase.from('rooms').update({ turn_phase: 'end' }).eq('code', roomCode);
         } else {
@@ -343,32 +395,12 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
   const processEndTurnLogic = async () => {
       if (!myParticipant) return;
-      
       let updatedTrans = [...(myParticipant.active_transformations || [])];
       let transExpired: string[] = [];
-      
-      updatedTrans = updatedTrans.map(t => {
-          if (t.rounds_left === -1) return t; 
-          return { ...t, rounds_left: t.rounds_left - 1 };
-      }).filter(t => { 
-          if (t.rounds_left === -1) return true; 
-          if (t.rounds_left <= 0) { transExpired.push(t.name); return false; } 
-          return true; 
-      });
-
+      updatedTrans = updatedTrans.map(t => { if (t.rounds_left === -1) return t; return { ...t, rounds_left: t.rounds_left - 1 }; }).filter(t => { if (t.rounds_left === -1) return true; if (t.rounds_left <= 0) { transExpired.push(t.name); return false; } return true; });
       let updatedBuffs = [...(myParticipant.active_buffs || [])];
       let buffsExpired: string[] = [];
-      
-      updatedBuffs = updatedBuffs.map(b => {
-          if (b.duration === -1) return b; 
-          return { ...b, duration: b.duration - 1 };
-      }).filter(b => { 
-          if (b.duration === -1) return true; 
-          if (b.duration < 0) return true; 
-          if (b.duration <= 0) { buffsExpired.push(b.name); return false; } 
-          return true; 
-      });
-
+      updatedBuffs = updatedBuffs.map(b => { if (b.duration === -1) return b; return { ...b, duration: b.duration - 1 }; }).filter(b => { if (b.duration === -1) return true; if (b.duration < 0) return true; if (b.duration <= 0) { buffsExpired.push(b.name); return false; } return true; });
       let updatedDebuffs = [...(myParticipant.active_debuffs || [])];
       let debuffsExpired: string[] = [];
       let totalDamageTaken = 0;
@@ -378,33 +410,19 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
               const dmgVal = parseInt(d.damage);
               if (!isNaN(dmgVal) && dmgVal > 0) {
                   let finalDmg = dmgVal;
-                  const myChar = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
-                  if (myChar?.category === 'hit') finalDmg = 1; 
+                  const myCharLocal = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
+                  if (myCharLocal?.category === 'hit') finalDmg = 1; 
                   totalDamageTaken += finalDmg;
                   damageSources.push(`${d.name} (${finalDmg})`);
               }
           }
           return { ...d, duration: d.duration - 1 };
       }).filter(d => { if (d.duration <= 0) { debuffsExpired.push(d.name); return false; } return true; });
-
       let currentShield = shield;
       let currentHp = hp;
-      
-      if (totalDamageTaken > 0) {
-          if (currentShield >= totalDamageTaken) {
-              currentShield -= totalDamageTaken;
-          } else {
-              const remainingDmg = totalDamageTaken - currentShield;
-              currentShield = 0;
-              currentHp = Math.max(0, currentHp - remainingDmg);
-          }
-      }
-
-      setShield(currentShield);
-      setHp(currentHp);
-
+      if (totalDamageTaken > 0) { if (currentShield >= totalDamageTaken) { currentShield -= totalDamageTaken; } else { const remainingDmg = totalDamageTaken - currentShield; currentShield = 0; currentHp = Math.max(0, currentHp - remainingDmg); } }
+      setShield(currentShield); setHp(currentHp);
       await supabase.from('room_participants').update({ active_transformations: updatedTrans, active_buffs: updatedBuffs, active_debuffs: updatedDebuffs, current_hp: currentHp, current_shield: currentShield }).eq('id', myParticipant.id);
-
       let msgParts = [];
       if (totalDamageTaken > 0) msgParts.push(`💥 Sofreu ${totalDamageTaken} de dano (${damageSources.join(', ')}).`);
       if (transExpired.length > 0) msgParts.push(`❌ Transformações encerradas: ${transExpired.join(', ')}.`);
@@ -413,115 +431,37 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       if (msgParts.length > 0) { showCustomAlert("RESUMO DA FASE", msgParts.join('\n\n'), 'damage'); }
   };
 
-  const checkTurnChange = async (currentTurnParticipantId: string) => {
-      const myId = participants.find(p => p.user_id === userId)?.id;
-      if (myId && prevTurnIdRef.current && prevTurnIdRef.current !== myId && currentTurnParticipantId === myId) { console.log("⚡ É MEU TURNO!"); }
-      prevTurnIdRef.current = currentTurnParticipantId;
-  };
-
+  const checkTurnChange = async (currentTurnParticipantId: string) => { const myId = participants.find(p => p.user_id === userId)?.id; if (myId && prevTurnIdRef.current && prevTurnIdRef.current !== myId && currentTurnParticipantId === myId) { console.log("⚡ É MEU TURNO!"); } prevTurnIdRef.current = currentTurnParticipantId; };
   const updateGlobalStats = async (newHp: number, newMax: number) => { if (!myParticipant) return; await supabase.from('room_participants').update({ current_hp: newHp, max_hp: newMax }).eq('id', myParticipant.id); };
-  const changeHp = (amount: number) => { let finalAmount = amount; const myChar = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null; if (myChar?.category === 'hit' && amount < 0) finalAmount = -1; const newVal = Math.max(0, Math.min(maxHp, hp + finalAmount)); setHp(newVal); updateGlobalStats(newVal, maxHp); };
+  const changeHp = (amount: number) => { let finalAmount = amount; const myCharLocal = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null; if (myCharLocal?.category === 'hit' && amount < 0) finalAmount = -1; const newVal = Math.max(0, Math.min(maxHp, hp + finalAmount)); setHp(newVal); updateGlobalStats(newVal, maxHp); };
   const changeMaxHp = (amount: number) => { const newVal = Math.max(1, maxHp + amount); setMaxHp(newVal); const fixedHp = Math.min(hp, newVal); if (fixedHp !== hp) setHp(fixedHp); updateGlobalStats(fixedHp, newVal); };
   const changeShield = async (amount: number) => { if (!myParticipant) return; const newVal = Math.max(0, shield + amount); setShield(newVal); await supabase.from('room_participants').update({ current_shield: newVal }).eq('id', myParticipant.id); };
-
-  const handleAddMemberToField = async (member: TeamMember) => {
-      if (!myParticipant) return;
-      const currentState = [...(myParticipant.team_state || [])];
-      const newUnit: TeamMemberState = { name: member.name, current_hp: member.base_hp, max_hp: member.base_hp };
-      const newState = [...currentState, newUnit];
-      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
-      const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0);
-      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
-      setDeployMemberModalVisible(false);
-  };
-
-  const changeUnitHp = async (index: number, amount: number) => {
-      if (!myParticipant || !myParticipant.team_state) return;
-      const newState = [...myParticipant.team_state];
-      const unit = { ...newState[index] }; 
-      unit.current_hp = Math.min(unit.max_hp, unit.current_hp + amount);
-      if (unit.current_hp <= 0) { newState.splice(index, 1); } else { newState[index] = unit; }
-      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
-      const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0); 
-      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
-  };
-
-  const handleLeaveRoom = async () => {
-    if (channelRef.current) supabase.removeChannel(channelRef.current);
-    await supabase.from('room_participants').delete().eq('room_code', roomCode).eq('user_id', userId);
-    onExitGame();
-  };
-
+  const handleLeaveRoom = async () => { if (channelRef.current) supabase.removeChannel(channelRef.current); await supabase.from('room_participants').delete().eq('room_code', roomCode).eq('user_id', userId); onExitGame(); };
   const handleRemovePassive = (skillId: string) => { setMySkills(prev => prev.filter(s => s.id !== skillId)); };
   const handlePressPassive = (skill: CharacterSkill) => { showCustomAlert(skill.name, skill.description, 'info', () => handleRemovePassive(skill.id), true, undefined, "REMOVER", "FECHAR"); };
   const removeStatusEffect = async (effectName: string, type: 'buff' | 'debuff') => { if (!myParticipant) return; if (type === 'buff') { const newArr = (myParticipant.active_buffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_buffs: newArr }).eq('id', myParticipant.id); } else { const newArr = (myParticipant.active_debuffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_debuffs: newArr }).eq('id', myParticipant.id); } };
   const handlePressStatusEffect = (effect: ActiveStatusEffect, type: 'buff' | 'debuff') => { let detailText = effect.description ? effect.description : "Sem descrição."; detailText += `\n\nDuração: ${getVisualDuration(effect.duration, type)}`; if(effect.damage) detailText += `\nDano: ${effect.damage}`; showCustomAlert(effect.name, detailText, type === 'buff' ? 'info' : 'damage', () => removeStatusEffect(effect.name, type), true, undefined, "REMOVER", "FECHAR"); };
-  
-  const activateSkill = async (skill: CharacterSkill) => { 
-      if (skill.type === 'transformation') { 
-          const currentList = myParticipant?.active_transformations || []; 
-          if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } 
-          
-          let durationToSave = 4; 
-          if (skill.duration === -1) {
-              durationToSave = -1;
-          } else if (skill.duration && skill.duration > 0) {
-              durationToSave = skill.duration + 1; 
-          }
-
-          const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; 
-          await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); 
-          
-          const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`;
-          showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); 
-      } else { 
-          const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); 
-      } 
-      setSkillsModalVisible(false); 
-  };
-
-  const removeTransformation = async (transName: string) => {
-      if(!myParticipant) return;
-      const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName);
-      await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id);
-      showCustomAlert("Info", "Destransformado com sucesso!", 'info');
-  };
-
+  const activateSkill = async (skill: CharacterSkill) => { if (skill.type === 'transformation') { const currentList = myParticipant?.active_transformations || []; if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } let durationToSave = 4; if (skill.duration === -1) { durationToSave = -1; } else if (skill.duration && skill.duration > 0) { durationToSave = skill.duration + 1; } const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`; showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); } else { const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); } setSkillsModalVisible(false); };
+  const removeTransformation = async (transName: string) => { if(!myParticipant) return; const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName); await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id); showCustomAlert("Info", "Destransformado com sucesso!", 'info'); };
   const openEffectList = (type: 'buff' | 'debuff') => { setTargetEffectType(type); setEffectsListModalVisible(true); };
   const applyStatusEffect = async (effect: StatusEffect) => { if (!myParticipant) return; const baseDuration = (effect.duration && effect.duration > 0) ? effect.duration : 0; const finalDuration = targetEffectType === 'buff' ? (baseDuration > 0 ? baseDuration + 1 : 0) : baseDuration; const newEffect: ActiveStatusEffect = { name: effect.title, description: effect.description, damage: effect.damage, duration: finalDuration }; if (targetEffectType === 'buff') { const currentBuffs = myParticipant.active_buffs || []; if (currentBuffs.some(b => b.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse buff."); return; } await supabase.from('room_participants').update({ active_buffs: [...currentBuffs, newEffect] }).eq('id', myParticipant.id); } else { const currentDebuffs = myParticipant.active_debuffs || []; if (currentDebuffs.some(d => d.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse debuff."); return; } await supabase.from('room_participants').update({ active_debuffs: [...currentDebuffs, newEffect] }).eq('id', myParticipant.id); } setEffectsListModalVisible(false); };
   const getVisualDuration = (dur: number, type: 'buff' | 'debuff' | 'trans') => { if (dur < 0) return '∞'; if (dur <= 0) return '∞'; if (type === 'debuff') return `${dur}`; return `${Math.max(dur - 1, 0)}`; };
   const getPhaseLabel = (phase?: string) => { switch(phase) { case 'main': return "MAIN"; case 'end': return "END"; default: return "INIT"; } };
   const getButtonLabel = (phase?: string) => { switch(phase) { case 'initial': return "MAIN 🛡️"; case 'main': return "END 🏁"; case 'end': return "TURN ⏭️"; default: return "INICIAR"; } };
   const getPhaseColor = (phase?: string) => { switch(phase) { case 'main': return "#00B37E"; case 'end': return "#FFD700"; default: return "#8257e5"; } };
-
-  const getSkillSubtypeLabel = (type?: string) => {
-    switch(type) {
-        case 'general': return 'EQUIPE';
-        case 'transformed': return 'TRANSF.';
-        default: return 'INDIV.';
-    }
-  };
-
-  const getSkillSubtypeColor = (type?: string) => {
-    switch(type) {
-        case 'general': return '#00B37E';
-        case 'transformed': return '#ff4444';
-        default: return '#8257e5';
-    }
-  };
+  const getSkillSubtypeLabel = (type?: string) => { switch(type) { case 'general': return 'EQUIPE'; case 'transformed': return 'TRANSF.'; default: return 'INDIV.'; } };
+  const getSkillSubtypeColor = (type?: string) => { switch(type) { case 'general': return '#00B37E'; case 'transformed': return '#ff4444'; default: return '#8257e5'; } };
 
   if (!myParticipant || !room) return <View style={styles.loading}><ActivityIndicator size="large" color="#8257e5" /><Text style={{color:'#fff'}}>Carregando...</Text><TouchableOpacity onPress={onExitGame} style={{marginTop:20, padding:10, backgroundColor:'#333', borderRadius:8}}><Text style={{color:'#fff'}}>Sair</Text></TouchableOpacity></View>;
 
   const isMyTurn = room.current_turn_participant_id === myParticipant.id;
   const currentPhase = room.turn_phase || 'initial';
-  const myChar = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
   const currentPlayer = participants.find(p => p.id === room.current_turn_participant_id);
   const transformations = mySkills.filter(s => s.type === 'transformation');
   const activeSkills = mySkills.filter(s => s.type === 'active');
   const passives = mySkills.filter(s => s.type === 'passive');
   const filteredEffects = catalogEffects.filter(e => e.type === targetEffectType);
-  const reserveMembers = myChar?.team_members || [];
-  const activeUnits = myParticipant.team_state || [];
+  
   const getNotifyColor = () => { switch(notificationData.type) { case 'victory': return '#FFD700'; case 'damage': return '#ff4444'; default: return '#8257e5'; } };
   const myBannerActive = (myParticipant.challenge_completed || challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`]) && myChar?.challenge_banner_url;
 
@@ -546,9 +486,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         
         {/* BANNER PRINCIPAL DO JOGADOR */}
         <View style={[styles.charArea, !myBannerActive && {backgroundColor: '#2A2A2E'}]}>
-            {myBannerActive && (
-                <Image source={{ uri: myChar.challenge_banner_url }} style={styles.bannerBackground} resizeMode="cover" />
-            )}
+            {myBannerActive && ( <Image source={{ uri: myChar.challenge_banner_url }} style={styles.bannerBackground} resizeMode="cover" /> )}
             {myBannerActive && <View style={styles.bannerOverlay} />}
             <View style={styles.charImageContainer}>
                 {myChar?.image_url ? <Image source={{ uri: myChar.image_url }} style={styles.charImage} /> : <View style={styles.charPlaceholder}><Ionicons name="person" size={40} color="#fff" /></View>}
@@ -556,26 +494,20 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
             <View style={{flex:1}}>
                 <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
                    <View style={[styles.textBox, { marginBottom: 5 }]}><Text style={styles.charName}>{myChar?.name || 'Unknown'}</Text></View>
-                   {/* CONTROLE DE LEVEL UP/DOWN */}
-                   {myChar?.category !== 'equipe' && (
+                   {/* CONTROLE DE LEVEL UP/DOWN (INDIVIDUAL) */}
+                   {(myChar?.category !== 'equipe' && myChar?.has_level_system) && (
                        <View style={{flexDirection:'row', alignItems:'center', backgroundColor:'rgba(0,0,0,0.6)', padding:4, borderRadius:8, borderWidth:1, borderColor:'#FFD700', marginLeft: 10}}>
-                           <TouchableOpacity onPress={() => handleLevelChange(-1)} style={{paddingHorizontal:6, paddingVertical:2}}>
-                               <Ionicons name="remove" size={16} color="#FFD700"/>
-                           </TouchableOpacity>
+                           <TouchableOpacity onPress={() => handleLevelChange(-1)} style={{paddingHorizontal:6, paddingVertical:2}}><Ionicons name="remove" size={16} color="#FFD700"/></TouchableOpacity>
                            <Text style={{color:'#FFD700', fontWeight:'bold', fontSize:14, marginHorizontal:2}}>Lv {currentLevel}</Text>
-                           <TouchableOpacity onPress={() => handleLevelChange(1)} style={{paddingHorizontal:6, paddingVertical:2}}>
-                               <Ionicons name="add" size={16} color="#FFD700"/>
-                           </TouchableOpacity>
+                           <TouchableOpacity onPress={() => handleLevelChange(1)} style={{paddingHorizontal:6, paddingVertical:2}}><Ionicons name="add" size={16} color="#FFD700"/></TouchableOpacity>
                        </View>
                    )}
                 </View>
-
                 {myBannerActive && (<View style={[styles.textBox, {backgroundColor: 'rgba(255, 215, 0, 0.2)', borderWidth:1, borderColor:'#FFD700', marginBottom:2}]}><View style={{flexDirection:'row', alignItems:'center'}}><Ionicons name="trophy" size={10} color="#FFD700" style={{marginRight:4}}/><Text style={{color:'#FFD700', fontSize:10, fontWeight:'bold'}}>DESAFIO COMPLETO</Text></View></View>)}
                 <View style={{flexDirection:'row', flexWrap:'wrap'}}><View style={styles.textBox}><Text style={styles.playerNameTag}>({myParticipant.username})</Text></View>{myChar?.category && (<View style={[styles.textBox, {marginLeft:5}]}><Text style={[styles.playerNameTag, {color:'#FFD700', fontWeight:'bold'}]}>{myChar.category.toUpperCase()}</Text></View>)}</View>
             </View>
         </View>
 
-        {/* ... (RESTANTE DO CÓDIGO MANTIDO) ... */}
         {myChar?.category === 'equipe' ? (
             <View style={styles.teamContainer}>
                 <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
@@ -585,7 +517,42 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 {activeUnits.length === 0 ? (
                      <TouchableOpacity style={{backgroundColor:'rgba(255, 215, 0, 0.1)', borderWidth:1, borderColor:'#FFD700', padding:20, borderRadius:8, alignItems:'center', borderStyle:'dashed', marginTop:10}} onPress={() => setDeployMemberModalVisible(true)}><Ionicons name="people" size={32} color="#FFD700" /><Text style={{color:'#FFD700', fontWeight:'bold', marginTop:10}}>NENHUMA UNIDADE EM CAMPO</Text><Text style={{color:'#aaa', fontSize:12, marginTop:5}}>Toque para invocar seu primeiro membro</Text></TouchableOpacity>
                 ) : (
-                    activeUnits.map((unit, idx) => (<View key={`${unit.name}-${idx}`} style={styles.unitRow}><Text style={styles.unitName}>{unit.name}</Text><View style={styles.unitControls}><TouchableOpacity onPress={() => changeUnitHp(idx, -1)} style={[styles.miniBtn, {backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={16} color="#fff"/></TouchableOpacity><Text style={styles.unitHp}>{unit.current_hp}</Text><TouchableOpacity onPress={() => changeUnitHp(idx, 1)} style={[styles.miniBtn, {backgroundColor:'#00B37E'}]}><Ionicons name="add" size={16} color="#fff"/></TouchableOpacity></View></View>))
+                    activeUnits.map((unit, idx) => (
+                        <View key={`${unit.name}-${idx}`} style={[styles.unitRow, {flexDirection: 'column', alignItems: 'stretch'}]}>
+                            {/* LINHA 1: NOME E LEVEL */}
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+                                <Text style={styles.unitName}>{unit.name}</Text>
+                                {/* CONTROLE DE NIVEL DA UNIDADE (SÓ SE A EQUIPE TIVER SISTEMA DE NÍVEL) */}
+                                {myChar.has_level_system && (
+                                    <View style={{flexDirection:'row', alignItems:'center', backgroundColor:'#222', borderRadius:6, padding:2, borderWidth:1, borderColor:'#FFD700'}}>
+                                        <TouchableOpacity onPress={() => changeUnitLevel(idx, -1)} style={{padding:4}}><Ionicons name="remove" size={12} color="#FFD700"/></TouchableOpacity>
+                                        <Text style={{color:'#FFD700', fontSize:12, fontWeight:'bold', marginHorizontal:6}}>Lv {unit.current_level || 1}</Text>
+                                        <TouchableOpacity onPress={() => changeUnitLevel(idx, 1)} style={{padding:4}}><Ionicons name="add" size={12} color="#FFD700"/></TouchableOpacity>
+                                    </View>
+                                )}
+                            </View>
+
+                            {/* LINHA 2: CONTROLES DE HP */}
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
+                                {/* MAX HP */}
+                                <View style={{flexDirection:'row', alignItems:'center'}}>
+                                    <Text style={{color:'#777', fontSize:10, marginRight:4}}>Max:</Text>
+                                    <TouchableOpacity onPress={() => changeUnitMaxHp(idx, -1)}><Ionicons name="remove-circle" size={20} color="#555"/></TouchableOpacity>
+                                    <Text style={{color:'#fff', fontWeight:'bold', marginHorizontal:4}}>{unit.max_hp}</Text>
+                                    <TouchableOpacity onPress={() => changeUnitMaxHp(idx, 1)}><Ionicons name="add-circle" size={20} color="#555"/></TouchableOpacity>
+                                </View>
+
+                                {/* CURRENT HP */}
+                                <View style={styles.unitControls}>
+                                    <TouchableOpacity onPress={() => changeUnitHp(idx, -10)} style={[styles.miniBtn, {backgroundColor:'#330000', width:28, height:28, marginRight:4}]}><Text style={{color:'#ff4444', fontSize:10, fontWeight:'bold'}}>-10</Text></TouchableOpacity>
+                                    <TouchableOpacity onPress={() => changeUnitHp(idx, -1)} style={[styles.miniBtn, {backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={16} color="#fff"/></TouchableOpacity>
+                                    <Text style={styles.unitHp}>{unit.current_hp}</Text>
+                                    <TouchableOpacity onPress={() => changeUnitHp(idx, 1)} style={[styles.miniBtn, {backgroundColor:'#00B37E'}]}><Ionicons name="add" size={16} color="#fff"/></TouchableOpacity>
+                                    <TouchableOpacity onPress={() => changeUnitHp(idx, 10)} style={[styles.miniBtn, {backgroundColor:'#003300', width:28, height:28, marginLeft:4}]}><Text style={{color:'#00B37E', fontSize:10, fontWeight:'bold'}}>+10</Text></TouchableOpacity>
+                                </View>
+                            </View>
+                        </View>
+                    ))
                 )}
                 <Text style={{color:'#777', fontSize:10, textAlign:'center', marginTop:10}}>HP TOTAL DO EXÉRCITO: {hp}</Text>
             </View>
@@ -596,6 +563,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
             </>
         )}
 
+        {/* BUFFS E SKILLS */}
         <View style={[styles.statsCard, {marginBottom:10}]}>
             <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:5}}>
                 <Text style={[styles.label, {color:'#00B37E', marginBottom:0}]}>BUFFS / PASSIVAS</Text>
@@ -675,6 +643,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         })}
       </ScrollView>
 
+      {/* FOOTER */}
       <View style={styles.footer}>
         {isMyTurn ? (
             <TouchableOpacity style={[styles.passTurnButton, {backgroundColor: getPhaseColor(currentPhase)}]} onPress={handlePhaseAction} disabled={processingPhase}>
@@ -686,45 +655,12 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         <TouchableOpacity style={styles.exitButton} onPress={handleLeaveRoom}><Text style={{color:'#777'}}>Sair</Text></TouchableOpacity>
       </View>
 
-      <Modal animationType="fade" transparent={true} visible={notificationVisible} onRequestClose={() => setNotificationVisible(false)}>
-        <View style={styles.modalOverlay}>
-            <View style={[styles.styledModalContent, {borderColor: getNotifyColor(), minHeight: 200, justifyContent:'center'}]}>
-                <Text style={[styles.styledModalTitle, {color: getNotifyColor(), textAlign:'center', marginBottom:15}]}>{notificationData.title}</Text>
-                <Text style={{color:'#fff', fontSize:16, textAlign:'center', marginBottom:25, lineHeight:24}}>{notificationData.message}</Text>
-                <View style={{flexDirection:'row', justifyContent:'center'}}>
-                    {notificationData.hasCancel && (<TouchableOpacity onPress={notificationData.onCancel} style={{padding:12, marginRight:10}}><Text style={{color:'#777', fontWeight:'bold'}}>{notificationData.cancelText}</Text></TouchableOpacity>)}
-                    <TouchableOpacity onPress={notificationData.onConfirm} style={{backgroundColor: getNotifyColor(), paddingVertical:12, paddingHorizontal:30, borderRadius:8}}><Text style={{color:'#000', fontWeight:'bold'}}>{notificationData.confirmText}</Text></TouchableOpacity>
-                </View>
-            </View>
-        </View>
-      </Modal>
-
-      <Modal animationType="fade" transparent={true} visible={deployMemberModalVisible} onRequestClose={() => { if ((myParticipant?.team_state?.length || 0) > 0) setDeployMemberModalVisible(false) }}>
-        <View style={styles.modalOverlay}>
-            <View style={[styles.styledModalContent, {borderColor:'#FFD700'}]}>
-                <View style={styles.styledModalHeader}>
-                    <Text style={[styles.styledModalTitle, {color:'#FFD700'}]}>{(myParticipant?.team_state?.length || 0) === 0 ? "🛡️ CONVOCAR LÍDER" : "⚔️ REFORÇOS"}</Text>
-                    {(myParticipant?.team_state?.length || 0) > 0 && (<TouchableOpacity onPress={() => setDeployMemberModalVisible(false)}><Ionicons name="close" size={28} color="#ccc" /></TouchableOpacity>)}
-                </View>
-                {reserveMembers.length === 0 ? (<Text style={{color:'#777', textAlign:'center', marginVertical:20}}>Sem reserva disponível (Todos em campo).</Text>) : (
-                    <FlatList data={reserveMembers} keyExtractor={(item, index) => `${item.name}-${index}`} renderItem={({item}) => (
-                        <TouchableOpacity style={styles.cardItem} onPress={() => handleAddMemberToField(item)}>
-                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', flex:1}}>
-                                <View><Text style={styles.cardName}>{item.name}</Text><Text style={{color:'#777', fontSize:10}}>Reserva</Text></View>
-                                <View style={{backgroundColor:'#FFD700', paddingHorizontal:10, paddingVertical:6, borderRadius:8}}><Text style={{color:'#000', fontWeight:'bold', fontSize:12}}>{item.base_hp} HP</Text></View>
-                            </View>
-                        </TouchableOpacity>
-                    )}/>
-                )}
-            </View>
-        </View>
-      </Modal>
-
+      {/* MODAL SKILLS (ATUALIZADO) */}
       <Modal animationType="slide" transparent={true} visible={skillsModalVisible} onRequestClose={() => setSkillsModalVisible(false)}>
         <View style={styles.modalOverlay}>
             <View style={[styles.styledModalContent, {borderColor:'#8257e5'}]}>
                 <View style={styles.styledModalHeader}>
-                    <Text style={[styles.styledModalTitle, {color:'#8257e5'}]}>⚡ ARSENAL (LV {currentLevel})</Text>
+                    <Text style={[styles.styledModalTitle, {color:'#8257e5'}]}>⚡ ARSENAL {(!myChar?.category || myChar.category !== 'equipe') && `(LV ${currentLevel})`}</Text>
                     <TouchableOpacity onPress={() => setSkillsModalVisible(false)}><Ionicons name="close" size={28} color="#ccc" /></TouchableOpacity>
                 </View>
                 <ScrollView>
@@ -748,16 +684,29 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                                  myParticipant.team_state.map((activeMember, index) => {
                                      const originalMemberData = myChar.team_members?.find(m => m.name === activeMember.name);
                                      const memberSkills = (originalMemberData?.skills || []).filter(s => s.passive_type !== 'general' && s.active_type !== 'general');
+                                     const currentUnitLevel = activeMember.current_level || 1;
+                                     const showLevel = myChar.has_level_system; // Só mostra nível se tiver sistema
+
                                      return (
                                          <View key={index} style={{marginBottom: 20}}>
-                                             <Text style={{color:'#FFF', fontWeight:'bold', fontSize:16, marginBottom:10, borderBottomWidth:1, borderBottomColor:'#333', paddingBottom:5}}>{activeMember.name} (HP: {activeMember.current_hp})</Text>
+                                             <Text style={{color:'#FFF', fontWeight:'bold', fontSize:16, marginBottom:10, borderBottomWidth:1, borderBottomColor:'#333', paddingBottom:5}}>{activeMember.name} {showLevel && `(Lv ${currentUnitLevel})`}</Text>
                                              {memberSkills.length === 0 ? (<Text style={{color:'#777', fontStyle:'italic'}}>Sem habilidades.</Text>) : (
-                                                 memberSkills.map((s, sIdx) => (
-                                                    <TouchableOpacity key={sIdx} style={styles.cardItem} onPress={() => activateSkill(s)}>
-                                                        <View style={{flex:1}}><Text style={styles.cardName}>{s.name}</Text><Text style={styles.cardDesc}>{s.description}</Text></View>
-                                                        <Ionicons name="play-circle" size={24} color="#00B37E" />
-                                                    </TouchableOpacity>
-                                                 ))
+                                                 memberSkills.map((s, sIdx) => {
+                                                    const requiredLevel = s.unlock_level || 1;
+                                                    // Se não tem sistema de nível, ignora a trava (considera destravado)
+                                                    const isLocked = showLevel ? (currentUnitLevel < requiredLevel) : false;
+                                                    
+                                                    return (
+                                                        <TouchableOpacity key={sIdx} style={[styles.cardItem, isLocked && {opacity: 0.5}]} onPress={() => !isLocked && activateSkill(s)} disabled={isLocked}>
+                                                            <View style={{flex:1}}>
+                                                                <Text style={styles.cardName}>{(showLevel && isLocked) ? `[Bloqueado Lv ${requiredLevel}] ` : ''}{s.name}</Text>
+                                                                <Text style={styles.cardDesc}>{s.description}</Text>
+                                                                {(s.type === 'passive' || s.type === 'active') && (<View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSkillSubtypeColor(s.type==='passive'?s.passive_type:s.active_type)}}><Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{getSkillSubtypeLabel(s.type==='passive'?s.passive_type:s.active_type)}</Text></View>)}
+                                                            </View>
+                                                            {!isLocked ? <Ionicons name="play-circle" size={24} color="#00B37E" /> : <Ionicons name="lock-closed" size={24} color="#777" />}
+                                                        </TouchableOpacity>
+                                                    );
+                                                 })
                                              )}
                                          </View>
                                      );
@@ -766,11 +715,11 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                         </View>
                     ) : (
                         <>
-                            {mySkills.length === 0 && <Text style={{color:'#777', textAlign:'center', marginTop: 20}}>Nenhuma habilidade desbloqueada para o Nível {currentLevel}.</Text>}
+                            {mySkills.length === 0 && <Text style={{color:'#777', textAlign:'center', marginTop: 20}}>Nenhuma habilidade desbloqueada.</Text>}
                             {mySkills.map((s, idx) => (
                                 <TouchableOpacity key={idx} style={styles.cardItem} onPress={() => activateSkill(s)}>
                                     <View style={{flex:1}}>
-                                        <Text style={styles.cardName}>{(s.unlock_level || 1) > 1 ? `[Lv${s.unlock_level}] ` : ''}{s.name}</Text>
+                                        <Text style={styles.cardName}>{s.name}</Text>
                                         <Text style={styles.cardDesc}>{s.description} • {s.cost || '-'}</Text>
                                         {(s.type === 'passive' || s.type === 'active') && (
                                             <View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSkillSubtypeColor(s.type==='passive'?s.passive_type:s.active_type)}}>
@@ -784,6 +733,41 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                         </>
                     )}
                 </ScrollView>
+            </View>
+        </View>
+      </Modal>
+
+      {/* OUTROS MODAIS MANTIDOS... */}
+      <Modal animationType="fade" transparent={true} visible={notificationVisible} onRequestClose={() => setNotificationVisible(false)}>
+        <View style={styles.modalOverlay}>
+            <View style={[styles.styledModalContent, {borderColor: getNotifyColor(), minHeight: 200, justifyContent:'center'}]}>
+                <Text style={[styles.styledModalTitle, {color: getNotifyColor(), textAlign:'center', marginBottom:15}]}>{notificationData.title}</Text>
+                <Text style={{color:'#fff', fontSize:16, textAlign:'center', marginBottom:25, lineHeight:24}}>{notificationData.message}</Text>
+                <View style={{flexDirection:'row', justifyContent:'center'}}>
+                    {notificationData.hasCancel && (<TouchableOpacity onPress={notificationData.onCancel} style={{padding:12, marginRight:10}}><Text style={{color:'#777', fontWeight:'bold'}}>{notificationData.cancelText}</Text></TouchableOpacity>)}
+                    <TouchableOpacity onPress={notificationData.onConfirm} style={{backgroundColor: getNotifyColor(), paddingVertical:12, paddingHorizontal:30, borderRadius:8}}><Text style={{color:'#000', fontWeight:'bold'}}>{notificationData.confirmText}</Text></TouchableOpacity>
+                </View>
+            </View>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent={true} visible={deployMemberModalVisible} onRequestClose={() => { if ((myParticipant?.team_state?.length || 0) > 0) setDeployMemberModalVisible(false) }}>
+        <View style={styles.modalOverlay}>
+            <View style={[styles.styledModalContent, {borderColor:'#FFD700'}]}>
+                <View style={styles.styledModalHeader}>
+                    <Text style={[styles.styledModalTitle, {color:'#FFD700'}]}>{(myParticipant?.team_state?.length || 0) === 0 ? "🛡️ CONVOCAR LÍDER" : "⚔️ REFORÇOS"}</Text>
+                    {(myParticipant?.team_state?.length || 0) > 0 && (<TouchableOpacity onPress={() => setDeployMemberModalVisible(false)}><Ionicons name="close" size={28} color="#ccc" /></TouchableOpacity>)}
+                </View>
+                {reserveMembers.length === 0 ? (<Text style={{color:'#777', textAlign:'center', marginVertical:20}}>Sem reserva disponível.</Text>) : (
+                    <FlatList data={reserveMembers} keyExtractor={(item, index) => `${item.name}-${index}`} renderItem={({item}) => (
+                        <TouchableOpacity style={styles.cardItem} onPress={() => handleAddMemberToField(item)}>
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', flex:1}}>
+                                <View><Text style={styles.cardName}>{item.name}</Text><Text style={{color:'#777', fontSize:10}}>Reserva</Text></View>
+                                <View style={{backgroundColor:'#FFD700', paddingHorizontal:10, paddingVertical:6, borderRadius:8}}><Text style={{color:'#000', fontWeight:'bold', fontSize:12}}>{item.base_hp} HP</Text></View>
+                            </View>
+                        </TouchableOpacity>
+                    )}/>
+                )}
             </View>
         </View>
       </Modal>

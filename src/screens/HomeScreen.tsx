@@ -693,20 +693,18 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     <TextInput style={styles.input} placeholder="Quantidade de Escudo" placeholderTextColor="#555" value={shieldInput} onChangeText={setShieldInput} keyboardType="numeric"/>
                 )}
 
-                {/* NOVO: SISTEMA DE NÍVEIS (SÓ SE NÃO FOR EQUIPE) */}
-                {newCategory !== 'equipe' && (
-                    <View style={{marginTop: 10, padding: 10, backgroundColor: '#222', borderRadius: 8}}>
-                        <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
-                            <Text style={{color:'#fff', fontWeight:'bold'}}>Possui Sistema de Nível?</Text>
-                            <TouchableOpacity onPress={() => setHasLevelSystem(!hasLevelSystem)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: hasLevelSystem ? '#00B37E' : 'transparent'}}>
-                                {hasLevelSystem && <Ionicons name="checkmark" size={18} color="#fff" />}
-                            </TouchableOpacity>
-                        </View>
-                        {hasLevelSystem && (
-                            <TextInput style={[styles.input, {marginBottom: 0}]} placeholder="Quantidade Máxima de Níveis" placeholderTextColor="#555" value={maxLevelsInput} onChangeText={setMaxLevelsInput} keyboardType="numeric"/>
-                        )}
+                {/* NOVO: SISTEMA DE NÍVEIS (PARA TODOS OS TIPOS) */}
+                <View style={{marginTop: 10, padding: 10, backgroundColor: '#222', borderRadius: 8}}>
+                    <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                        <Text style={{color:'#fff', fontWeight:'bold'}}>Possui Sistema de Nível?</Text>
+                        <TouchableOpacity onPress={() => setHasLevelSystem(!hasLevelSystem)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: hasLevelSystem ? '#00B37E' : 'transparent'}}>
+                            {hasLevelSystem && <Ionicons name="checkmark" size={18} color="#fff" />}
+                        </TouchableOpacity>
                     </View>
-                )}
+                    {hasLevelSystem && (
+                        <TextInput style={[styles.input, {marginBottom: 0}]} placeholder="Quantidade Máxima de Níveis" placeholderTextColor="#555" value={maxLevelsInput} onChangeText={setMaxLevelsInput} keyboardType="numeric"/>
+                    )}
+                </View>
 
                 <Text style={[styles.sectionHeader, {marginTop:10}]}>IMAGEM DO PERSONAGEM</Text>
                 <TouchableOpacity onPress={pickImage} style={styles.imagePickerBtn}>
@@ -799,6 +797,19 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                         <Text style={{color:'#aaa', fontSize:12, marginBottom:5}}>{editingSkillIndex !== null ? `EDITANDO: ${tempSkills[editingSkillIndex].name}` : "NOVA HABILIDADE"}</Text>
                         <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Nome Skill" placeholderTextColor="#555" value={skillName} onChangeText={setSkillName}/>
                         <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Descrição" placeholderTextColor="#555" value={skillDesc} onChangeText={setSkillDesc}/>
+                        
+                        {/* INPUT DE NÍVEL (PARA MEMBROS DE EQUIPE TAMBÉM SE A EQUIPE TIVER NÍVEL) */}
+                        {hasLevelSystem && (
+                            <TextInput 
+                                style={[styles.input, {marginBottom:5, borderColor: '#00B37E', borderWidth: 1}]} 
+                                placeholder="Desbloquear no Nível (Padrão: 1)" 
+                                placeholderTextColor="#555" 
+                                value={skillUnlockLevel} 
+                                onChangeText={setSkillUnlockLevel} 
+                                keyboardType="numeric"
+                            />
+                        )}
+
                         {skillType !== 'passive' && (<View><TextInput style={[styles.input, {marginBottom:10}]} placeholder="Custo" placeholderTextColor="#555" value={skillCost} onChangeText={setSkillCost}/><TextInput style={[styles.input, {marginBottom:10}]} placeholder="Duração (Vazio = Infinito)" placeholderTextColor="#555" value={skillDuration} onChangeText={setSkillDuration} keyboardType="numeric"/></View>)}
                         <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}><Text style={{color:'#aaa', fontSize:12}}>Gera Escudo?</Text><TouchableOpacity onPress={() => setSkillGeneratesShield(!skillGeneratesShield)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillGeneratesShield ? '#FFD700' : 'transparent'}}>{skillGeneratesShield && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity></View>
                         {skillGeneratesShield && (<TextInput style={[styles.input, {marginBottom:10}]} placeholder="Valor do Escudo" placeholderTextColor="#555" value={skillShieldValue} onChangeText={setSkillShieldValue} keyboardType="numeric"/>)}
@@ -837,7 +848,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                             {tempSkills.map((s, index) => (
                                 <View key={index} style={styles.skillRow}>
                                     <View style={{flex:1}}>
-                                        <Text style={{color:'#fff', fontWeight:'bold'}}>{s.name}</Text>
+                                        <Text style={{color:'#fff', fontWeight:'bold'}}>{(s.unlock_level ?? 1 ) > 1 ? `[Lv ${s.unlock_level}] ` : ''}{s.name}</Text>
                                         <Text style={{color:'#777', fontSize:10}}>{s.description}</Text>
                                         {(s.type === 'passive' || s.type === 'active') && (
                                             <View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSubtypeColor(s.type==='passive'?s.passive_type:s.active_type)}}>
@@ -859,7 +870,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
         </View>
       </Modal>
 
-      {/* EVENT/EFFECT MODALS */}
+      {/* EVENT/EFFECT MODALS (MANTIDOS IGUAIS) */}
       <Modal transparent visible={manageEventsModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Eventos</Text><TouchableOpacity onPress={openCreateEventModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity><TouchableOpacity onPress={()=>setManageEventsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity></View><FlatList data={catalogEvents} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={styles.catalogName}>{item.title}</Text></View><TouchableOpacity onPress={()=>openEditEventModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEvent(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/></View></View></Modal>
       <Modal transparent visible={createEventModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><Text style={styles.modalTitle}>Criar Evento</Text><TextInput style={styles.input} placeholder="Título" placeholderTextColor="#555" value={newEventTitle} onChangeText={setNewEventTitle}/><TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={newEventDesc} onChangeText={setNewEventDesc}/><TextInput style={styles.input} placeholder="URL Imagem" placeholderTextColor="#555" value={newEventImage} onChangeText={setNewEventImage}/><TouchableOpacity onPress={handleSaveEvent} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity><TouchableOpacity onPress={()=>setCreateEventModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity></View></View></Modal>
       <Modal transparent visible={manageEffectsModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Buffs & Debuffs</Text><TouchableOpacity onPress={openCreateEffectModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity><TouchableOpacity onPress={()=>setManageEffectsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity></View><FlatList data={catalogEffects} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={[styles.catalogName, {color: item.type==='buff'?'#00B37E':'#ff4444'}]}>{item.title}</Text><Text style={styles.catalogOrigin}>{item.type.toUpperCase()}{item.duration ? ` • ${item.duration} Rnds` : ''}</Text></View><TouchableOpacity onPress={()=>openEditEffectModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEffect(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/></View></View></Modal>

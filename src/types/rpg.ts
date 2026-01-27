@@ -80,6 +80,7 @@ export interface TeamMemberState {
   name: string;
   current_hp: number;
   max_hp: number;
+  current_level?: number;
 }
 
 export interface MatchHistoryItem {
