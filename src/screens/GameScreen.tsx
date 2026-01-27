@@ -16,12 +16,14 @@ interface GameScreenProps {
 }
 
 export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenProps) {
+  // ===========================================================================
+  // 1. STATES
+  // ===========================================================================
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
   const [myParticipant, setMyParticipant] = useState<RoomParticipant | null>(null);
   const [charactersMap, setCharactersMap] = useState<Record<string, GameCharacter>>({});
   
-  // STATES GERAIS
   const [allRawSkills, setAllRawSkills] = useState<CharacterSkill[]>([]);
   const [mySkills, setMySkills] = useState<CharacterSkill[]>([]);
   const [currentLevel, setCurrentLevel] = useState(1); 
@@ -50,7 +52,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const prevTurnIdRef = useRef<string | null>(null);
   const skillsLoadedRef = useRef(false);
 
-  // STATUS LOCAIS
+  // STATUS LOCAIS (Immediate Feedback)
   const [hp, setHp] = useState(10);
   const [maxHp, setMaxHp] = useState(10);
   const [shield, setShield] = useState(0);
@@ -62,13 +64,158 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const [initialCheckDone, setInitialCheckDone] = useState(false);
   const [victoryHandled, setVictoryHandled] = useState(false);
 
+  // ===========================================================================
+  // 2. VARIÁVEIS DERIVADAS
+  // ===========================================================================
+  const currentPlayer = participants.find(p => p.id === room?.current_turn_participant_id);
+  const isMyTurn = room?.current_turn_participant_id === myParticipant?.id;
+  const currentPhase = room?.turn_phase || 'initial';
+  
+  const myChar = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
+  
+  const activeUnits = (myParticipant?.team_state as TeamMemberState[]) || [];
+  const reserveMembers = (myChar?.team_members || []).filter(m => !activeUnits.some(u => u.name === m.name));
+  const filteredEffects = catalogEffects.filter(e => e.type === targetEffectType);
+  const myBannerActive = (myParticipant?.challenge_completed || (myParticipant && challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`])) && myChar?.challenge_banner_url;
+
+
+  // ===========================================================================
+  // 3. HELPER FUNCTIONS
+  // ===========================================================================
+  const getNotifyColor = () => { 
+      switch(notificationData.type) { 
+          case 'victory': return '#FFD700'; 
+          case 'damage': return '#ff4444'; 
+          default: return '#8257e5'; 
+      } 
+  };
+
+  const getVisualDuration = (dur: number, type: 'buff' | 'debuff' | 'trans') => { 
+      if (dur < 0) return '∞'; 
+      if (dur <= 0) return '∞'; 
+      if (type === 'debuff') return `${dur}`; 
+      return `${Math.max(dur - 1, 0)}`; 
+  };
+
+  const getPhaseLabel = (phase?: string) => { switch(phase) { case 'main': return "MAIN"; case 'end': return "END"; default: return "INIT"; } };
+  const getButtonLabel = (phase?: string) => { switch(phase) { case 'initial': return "MAIN 🛡️"; case 'main': return "END 🏁"; case 'end': return "TURN ⏭️"; default: return "INICIAR"; } };
+  const getPhaseColor = (phase?: string) => { switch(phase) { case 'main': return "#00B37E"; case 'end': return "#FFD700"; default: return "#8257e5"; } };
+  const getSkillSubtypeLabel = (type?: string) => { switch(type) { case 'general': return 'EQUIPE'; case 'transformed': return 'TRANSF.'; default: return 'INDIV.'; } };
+  const getSkillSubtypeColor = (type?: string) => { switch(type) { case 'general': return '#00B37E'; case 'transformed': return '#ff4444'; default: return '#8257e5'; } };
+
+  const showCustomAlert = (title: string, message: string, type: 'info'|'damage'|'victory' = 'info', onConfirm?: () => void, hasCancel = false, onCancel?: () => void, confirmText = 'CONFIRMAR', cancelText = 'CANCELAR') => {
+      setNotificationData({ title, message, type, onConfirm: () => { setNotificationVisible(false); if (onConfirm) onConfirm(); }, hasCancel, onCancel: () => { setNotificationVisible(false); if (onCancel) onCancel(); }, confirmText, cancelText });
+      setNotificationVisible(true);
+  };
+
+  const handleLeaveRoom = async () => {
+    if (channelRef.current) supabase.removeChannel(channelRef.current);
+    await supabase.from('room_participants').delete().eq('room_code', roomCode).eq('user_id', userId);
+    onExitGame();
+  };
+
+  // ===========================================================================
+  // 4. CORE GAME LOGIC
+  // ===========================================================================
+
+  const checkTurnChange = async (currentTurnParticipantId: string) => { 
+      const myId = participants.find(p => p.user_id === userId)?.id; 
+      if (myId && prevTurnIdRef.current && prevTurnIdRef.current !== myId && currentTurnParticipantId === myId) { 
+          console.log("⚡ É MEU TURNO!"); 
+      } 
+      prevTurnIdRef.current = currentTurnParticipantId; 
+  };
+
+  const processEndTurnLogic = async () => {
+      if (!myParticipant) return;
+      
+      let updatedTrans = [...(myParticipant.active_transformations || [])];
+      let transExpired: string[] = [];
+      updatedTrans = updatedTrans.map(t => { 
+          if (t.rounds_left === -1) return t; 
+          return { ...t, rounds_left: t.rounds_left - 1 }; 
+      }).filter(t => { 
+          if (t.rounds_left === -1) return true; 
+          if (t.rounds_left <= 0) { transExpired.push(t.name); return false; } 
+          return true; 
+      });
+
+      let updatedBuffs = [...(myParticipant.active_buffs || [])];
+      let buffsExpired: string[] = [];
+      updatedBuffs = updatedBuffs.map(b => { 
+          if (b.duration === -1) return b; 
+          return { ...b, duration: b.duration - 1 }; 
+      }).filter(b => { 
+          if (b.duration === -1) return true; 
+          if (b.duration < 0) return true; 
+          if (b.duration <= 0) { buffsExpired.push(b.name); return false; } 
+          return true; 
+      });
+
+      let updatedDebuffs = [...(myParticipant.active_debuffs || [])];
+      let debuffsExpired: string[] = [];
+      let totalDamageTaken = 0;
+      let damageSources: string[] = [];
+      
+      updatedDebuffs = updatedDebuffs.map(d => {
+          if (d.damage) {
+              const dmgVal = parseInt(d.damage);
+              if (!isNaN(dmgVal) && dmgVal > 0) {
+                  let finalDmg = dmgVal;
+                  if (myChar?.category === 'hit') finalDmg = 1; 
+                  totalDamageTaken += finalDmg;
+                  damageSources.push(`${d.name} (${finalDmg})`);
+              }
+          }
+          return { ...d, duration: d.duration - 1 };
+      }).filter(d => { if (d.duration <= 0) { debuffsExpired.push(d.name); return false; } return true; });
+
+      let currentShield = shield;
+      let currentHp = hp;
+      
+      if (totalDamageTaken > 0) { 
+          if (currentShield >= totalDamageTaken) { currentShield -= totalDamageTaken; } 
+          else { const remainingDmg = totalDamageTaken - currentShield; currentShield = 0; currentHp = Math.max(0, currentHp - remainingDmg); } 
+      }
+      
+      setShield(currentShield); setHp(currentHp);
+      await supabase.from('room_participants').update({ active_transformations: updatedTrans, active_buffs: updatedBuffs, active_debuffs: updatedDebuffs, current_hp: currentHp, current_shield: currentShield }).eq('id', myParticipant.id);
+      
+      let msgParts = [];
+      if (totalDamageTaken > 0) msgParts.push(`💥 Sofreu ${totalDamageTaken} de dano (${damageSources.join(', ')}).`);
+      if (transExpired.length > 0) msgParts.push(`❌ Transformações encerradas: ${transExpired.join(', ')}.`);
+      if (buffsExpired.length > 0) msgParts.push(`📉 Buffs expirados: ${buffsExpired.join(', ')}.`);
+      if (debuffsExpired.length > 0) msgParts.push(`✨ Debuffs removidos: ${debuffsExpired.join(', ')}.`);
+      if (msgParts.length > 0) { showCustomAlert("RESUMO DA FASE", msgParts.join('\n\n'), 'damage'); }
+  };
+
+  const handlePhaseAction = async () => {
+    if (!room || !participants.length || !room.current_turn_participant_id) return;
+    if (myParticipant && room.current_turn_participant_id !== myParticipant.id) return;
+    setProcessingPhase(true);
+    try {
+        const currentPhase = room.turn_phase || 'initial';
+        if (currentPhase === 'initial') { await supabase.from('rooms').update({ turn_phase: 'main' }).eq('code', roomCode); } 
+        else if (currentPhase === 'main') {
+            await processEndTurnLogic(); 
+            await supabase.from('rooms').update({ turn_phase: 'end' }).eq('code', roomCode);
+        } else {
+            const currentIndex = participants.findIndex(p => p.id === room.current_turn_participant_id);
+            const nextIndex = (currentIndex + 1) % participants.length;
+            await supabase.from('rooms').update({ current_turn_participant_id: participants[nextIndex].id, turn_phase: 'initial' }).eq('code', roomCode);
+        }
+    } catch (error) { showCustomAlert("Erro", "Falha ao mudar de fase."); } finally { setProcessingPhase(false); }
+  };
+
+  // ===========================================================================
+  // 5. EFFECTS
+  // ===========================================================================
   useEffect(() => {
     fetchGameData();
     subscribeToGame();
     return () => { if (channelRef.current) supabase.removeChannel(channelRef.current); };
   }, []);
 
-  // --- FILTRO DE SKILLS INDIVIDUAIS POR NÍVEL ---
   useEffect(() => {
       if (allRawSkills.length > 0) {
           const unlocked = allRawSkills.filter(s => (s.unlock_level || 1) <= currentLevel);
@@ -76,18 +223,17 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       }
   }, [currentLevel, allRawSkills]);
 
-  // --- CHECAGEM INICIAL ---
   useEffect(() => {
     if (!myParticipant) return;
     const myCharId = myParticipant.selected_character_id;
     if (!myCharId) return;
-    const myChar = charactersMap[myCharId];
-    if (!myChar) return; 
+    const char = charactersMap[myCharId];
+    if (!char) return; 
 
     if (!initialCheckDone) {
-        if (myChar.category === 'equipe') {
-            const activeUnits = myParticipant.team_state || [];
-            if (activeUnits.length === 0) {
+        if (char.category === 'equipe') {
+            const units = myParticipant.team_state || [];
+            if (units.length === 0) {
                 setDeployMemberModalVisible(true);
             }
         }
@@ -95,7 +241,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     }
   }, [myParticipant, charactersMap, initialCheckDone]);
 
-  // --- AUTOMATIZAÇÃO DE PASSIVAS ---
   useEffect(() => {
     if (myParticipant && room && initialCheckDone) {
         checkAndApplyPassives();
@@ -108,9 +253,9 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       mySkills
   ]);
 
-  const activeUnits = (myParticipant?.team_state as TeamMemberState[]) || [];
-  const myChar = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
-  const reserveMembers = (myChar?.team_members || []).filter(m => !activeUnits.some(u => u.name === m.name));
+  // ===========================================================================
+  // 6. ACTION HANDLERS
+  // ===========================================================================
 
   const checkAndApplyPassives = async () => {
       if (!myParticipant || !myChar) return;
@@ -182,6 +327,31 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       }
   };
 
+  const changeHp = async (amount: number) => { 
+      if (!myParticipant) return;
+      let finalAmount = amount; 
+      if (myChar?.category === 'hit' && amount < 0) finalAmount = -1; 
+      const newVal = Math.max(0, Math.min(maxHp, hp + finalAmount)); 
+      setHp(newVal); 
+      await supabase.from('room_participants').update({ current_hp: newVal }).eq('id', myParticipant.id);
+  };
+
+  const changeMaxHp = async (amount: number) => { 
+      if (!myParticipant) return;
+      const newVal = Math.max(1, maxHp + amount); 
+      setMaxHp(newVal); 
+      const fixedHp = Math.min(hp, newVal); 
+      if (fixedHp !== hp) setHp(fixedHp); 
+      await supabase.from('room_participants').update({ max_hp: newVal, current_hp: fixedHp }).eq('id', myParticipant.id);
+  };
+
+  const changeShield = async (amount: number) => { 
+      if (!myParticipant) return; 
+      const newVal = Math.max(0, shield + amount); 
+      setShield(newVal); 
+      await supabase.from('room_participants').update({ current_shield: newVal }).eq('id', myParticipant.id); 
+  };
+
   const handleLevelChange = async (delta: number) => {
       const newLevel = Math.max(1, currentLevel + delta);
       if (newLevel === currentLevel) return;
@@ -191,7 +361,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
   const changeUnitLevel = async (index: number, delta: number) => {
       if (!myParticipant || !myParticipant.team_state) return;
-      const newState = [...myParticipant.team_state];
+      const newState = [...activeUnits];
       const unit = { ...newState[index] };
       const currentLvl = unit.current_level || 1;
       const newLvl = Math.max(1, currentLvl + delta);
@@ -203,29 +373,19 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
   const changeUnitHp = async (index: number, amount: number) => {
       if (!myParticipant || !myParticipant.team_state) return;
-      const newState = [...myParticipant.team_state];
+      const newState = [...activeUnits];
       const unit = { ...newState[index] }; 
       unit.current_hp = Math.max(0, Math.min(unit.max_hp, unit.current_hp + amount));
-      
-      if (unit.current_hp <= 0) { 
-          newState.splice(index, 1); 
-      } else { 
-          newState[index] = unit; 
-      }
+      if (unit.current_hp <= 0) { newState.splice(index, 1); } else { newState[index] = unit; }
       
       const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
       const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0); 
-      
-      await supabase.from('room_participants').update({ 
-          team_state: newState, 
-          current_hp: totalHp, 
-          max_hp: totalMaxHp 
-      }).eq('id', myParticipant.id);
+      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
   };
 
   const changeUnitMaxHp = async (index: number, amount: number) => {
       if (!myParticipant || !myParticipant.team_state) return;
-      const newState = [...myParticipant.team_state];
+      const newState = [...activeUnits];
       const unit = { ...newState[index] }; 
       const newMax = Math.max(1, unit.max_hp + amount);
       unit.max_hp = newMax;
@@ -238,13 +398,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
   const handleAddMemberToField = async (member: TeamMember) => {
       if (!myParticipant) return;
-      const currentState = [...(myParticipant.team_state || [])];
-      const newUnit: TeamMemberState = { 
-          name: member.name, 
-          current_hp: member.base_hp, 
-          max_hp: member.base_hp, 
-          current_level: 1 
-      };
+      const currentState = [...activeUnits];
+      const newUnit: TeamMemberState = { name: member.name, current_hp: member.base_hp, max_hp: member.base_hp, current_level: 1 };
       const newState = [...currentState, newUnit];
       const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
       const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0);
@@ -252,19 +407,14 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       setDeployMemberModalVisible(false);
   };
 
-  const showCustomAlert = (title: string, message: string, type: 'info'|'damage'|'victory' = 'info', onConfirm?: () => void, hasCancel = false, onCancel?: () => void, confirmText = 'CONFIRMAR', cancelText = 'CANCELAR') => {
-      setNotificationData({ title, message, type, onConfirm: () => { setNotificationVisible(false); if (onConfirm) onConfirm(); }, hasCancel, onCancel: () => { setNotificationVisible(false); if (onCancel) onCancel(); }, confirmText, cancelText });
-      setNotificationVisible(true);
-  };
-
-  useEffect(() => {
-      if (!participants || participants.length === 0 || !myParticipant) return;
-      const survivors = participants.filter(p => p.current_hp > 0);
-      if (survivors.length === 1 && survivors[0].id === myParticipant.id && !victoryHandled && participants.length > 1) {
-          setVictoryHandled(true); 
-          showCustomAlert("👑 VITÓRIA SUPREMA!", "Todos os oponentes caíram. Registrar vitória?", 'victory', handleConfirmVictory, true, () => {}, "REGISTRAR", "AINDA NÃO");
-      }
-  }, [participants, myParticipant, victoryHandled]);
+  const handleRemovePassive = (skillId: string) => { setMySkills(prev => prev.filter(s => s.id !== skillId)); };
+  const handlePressPassive = (skill: CharacterSkill) => { showCustomAlert(skill.name, skill.description, 'info', () => handleRemovePassive(skill.id), true, undefined, "REMOVER", "FECHAR"); };
+  const removeStatusEffect = async (effectName: string, type: 'buff' | 'debuff') => { if (!myParticipant) return; if (type === 'buff') { const newArr = (myParticipant.active_buffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_buffs: newArr }).eq('id', myParticipant.id); } else { const newArr = (myParticipant.active_debuffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_debuffs: newArr }).eq('id', myParticipant.id); } };
+  const handlePressStatusEffect = (effect: ActiveStatusEffect, type: 'buff' | 'debuff') => { let detailText = effect.description ? effect.description : "Sem descrição."; detailText += `\n\nDuração: ${getVisualDuration(effect.duration, type)}`; if(effect.damage) detailText += `\nDano: ${effect.damage}`; showCustomAlert(effect.name, detailText, type === 'buff' ? 'info' : 'damage', () => removeStatusEffect(effect.name, type), true, undefined, "REMOVER", "FECHAR"); };
+  const activateSkill = async (skill: CharacterSkill) => { if (skill.type === 'transformation') { const currentList = myParticipant?.active_transformations || []; if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } let durationToSave = 4; if (skill.duration === -1) { durationToSave = -1; } else if (skill.duration && skill.duration > 0) { durationToSave = skill.duration + 1; } const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`; showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); } else { const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); } setSkillsModalVisible(false); };
+  const removeTransformation = async (transName: string) => { if(!myParticipant) return; const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName); await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id); showCustomAlert("Info", "Destransformado com sucesso!", 'info'); };
+  const openEffectList = (type: 'buff' | 'debuff') => { setTargetEffectType(type); setEffectsListModalVisible(true); };
+  const applyStatusEffect = async (effect: StatusEffect) => { if (!myParticipant) return; const baseDuration = (effect.duration && effect.duration > 0) ? effect.duration : 0; const finalDuration = targetEffectType === 'buff' ? (baseDuration > 0 ? baseDuration + 1 : 0) : baseDuration; const newEffect: ActiveStatusEffect = { name: effect.title, description: effect.description, damage: effect.damage, duration: finalDuration }; if (targetEffectType === 'buff') { const currentBuffs = myParticipant.active_buffs || []; if (currentBuffs.some(b => b.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse buff."); return; } await supabase.from('room_participants').update({ active_buffs: [...currentBuffs, newEffect] }).eq('id', myParticipant.id); } else { const currentDebuffs = myParticipant.active_debuffs || []; if (currentDebuffs.some(d => d.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse debuff."); return; } await supabase.from('room_participants').update({ active_debuffs: [...currentDebuffs, newEffect] }).eq('id', myParticipant.id); } setEffectsListModalVisible(false); };
 
   const handleConfirmVictory = async () => {
       if (!myParticipant || !room) return;
@@ -375,95 +525,21 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     channelRef.current = channel;
   };
 
-  const handlePhaseAction = async () => {
-    if (!room || !participants.length || !room.current_turn_participant_id) return;
-    if (myParticipant && room.current_turn_participant_id !== myParticipant.id) return;
-    setProcessingPhase(true);
-    try {
-        const currentPhase = room.turn_phase || 'initial';
-        if (currentPhase === 'initial') { await supabase.from('rooms').update({ turn_phase: 'main' }).eq('code', roomCode); } 
-        else if (currentPhase === 'main') {
-            await processEndTurnLogic(); 
-            await supabase.from('rooms').update({ turn_phase: 'end' }).eq('code', roomCode);
-        } else {
-            const currentIndex = participants.findIndex(p => p.id === room.current_turn_participant_id);
-            const nextIndex = (currentIndex + 1) % participants.length;
-            await supabase.from('rooms').update({ current_turn_participant_id: participants[nextIndex].id, turn_phase: 'initial' }).eq('code', roomCode);
-        }
-    } catch (error) { showCustomAlert("Erro", "Falha ao mudar de fase."); } finally { setProcessingPhase(false); }
-  };
+  useEffect(() => {
+      if (!participants || participants.length === 0 || !myParticipant) return;
+      const survivors = participants.filter(p => p.current_hp > 0);
+      if (survivors.length === 1 && survivors[0].id === myParticipant.id && !victoryHandled && participants.length > 1) {
+          setVictoryHandled(true); 
+          showCustomAlert("👑 VITÓRIA SUPREMA!", "Todos os oponentes caíram. Registrar vitória?", 'victory', handleConfirmVictory, true, () => {}, "REGISTRAR", "AINDA NÃO");
+      }
+  }, [participants, myParticipant, victoryHandled]);
 
-  const processEndTurnLogic = async () => {
-      if (!myParticipant) return;
-      let updatedTrans = [...(myParticipant.active_transformations || [])];
-      let transExpired: string[] = [];
-      updatedTrans = updatedTrans.map(t => { if (t.rounds_left === -1) return t; return { ...t, rounds_left: t.rounds_left - 1 }; }).filter(t => { if (t.rounds_left === -1) return true; if (t.rounds_left <= 0) { transExpired.push(t.name); return false; } return true; });
-      let updatedBuffs = [...(myParticipant.active_buffs || [])];
-      let buffsExpired: string[] = [];
-      updatedBuffs = updatedBuffs.map(b => { if (b.duration === -1) return b; return { ...b, duration: b.duration - 1 }; }).filter(b => { if (b.duration === -1) return true; if (b.duration < 0) return true; if (b.duration <= 0) { buffsExpired.push(b.name); return false; } return true; });
-      let updatedDebuffs = [...(myParticipant.active_debuffs || [])];
-      let debuffsExpired: string[] = [];
-      let totalDamageTaken = 0;
-      let damageSources: string[] = [];
-      updatedDebuffs = updatedDebuffs.map(d => {
-          if (d.damage) {
-              const dmgVal = parseInt(d.damage);
-              if (!isNaN(dmgVal) && dmgVal > 0) {
-                  let finalDmg = dmgVal;
-                  const myCharLocal = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
-                  if (myCharLocal?.category === 'hit') finalDmg = 1; 
-                  totalDamageTaken += finalDmg;
-                  damageSources.push(`${d.name} (${finalDmg})`);
-              }
-          }
-          return { ...d, duration: d.duration - 1 };
-      }).filter(d => { if (d.duration <= 0) { debuffsExpired.push(d.name); return false; } return true; });
-      let currentShield = shield;
-      let currentHp = hp;
-      if (totalDamageTaken > 0) { if (currentShield >= totalDamageTaken) { currentShield -= totalDamageTaken; } else { const remainingDmg = totalDamageTaken - currentShield; currentShield = 0; currentHp = Math.max(0, currentHp - remainingDmg); } }
-      setShield(currentShield); setHp(currentHp);
-      await supabase.from('room_participants').update({ active_transformations: updatedTrans, active_buffs: updatedBuffs, active_debuffs: updatedDebuffs, current_hp: currentHp, current_shield: currentShield }).eq('id', myParticipant.id);
-      let msgParts = [];
-      if (totalDamageTaken > 0) msgParts.push(`💥 Sofreu ${totalDamageTaken} de dano (${damageSources.join(', ')}).`);
-      if (transExpired.length > 0) msgParts.push(`❌ Transformações encerradas: ${transExpired.join(', ')}.`);
-      if (buffsExpired.length > 0) msgParts.push(`📉 Buffs expirados: ${buffsExpired.join(', ')}.`);
-      if (debuffsExpired.length > 0) msgParts.push(`✨ Debuffs removidos: ${debuffsExpired.join(', ')}.`);
-      if (msgParts.length > 0) { showCustomAlert("RESUMO DA FASE", msgParts.join('\n\n'), 'damage'); }
-  };
 
-  const checkTurnChange = async (currentTurnParticipantId: string) => { const myId = participants.find(p => p.user_id === userId)?.id; if (myId && prevTurnIdRef.current && prevTurnIdRef.current !== myId && currentTurnParticipantId === myId) { console.log("⚡ É MEU TURNO!"); } prevTurnIdRef.current = currentTurnParticipantId; };
-  const updateGlobalStats = async (newHp: number, newMax: number) => { if (!myParticipant) return; await supabase.from('room_participants').update({ current_hp: newHp, max_hp: newMax }).eq('id', myParticipant.id); };
-  const changeHp = (amount: number) => { let finalAmount = amount; const myCharLocal = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null; if (myCharLocal?.category === 'hit' && amount < 0) finalAmount = -1; const newVal = Math.max(0, Math.min(maxHp, hp + finalAmount)); setHp(newVal); updateGlobalStats(newVal, maxHp); };
-  const changeMaxHp = (amount: number) => { const newVal = Math.max(1, maxHp + amount); setMaxHp(newVal); const fixedHp = Math.min(hp, newVal); if (fixedHp !== hp) setHp(fixedHp); updateGlobalStats(fixedHp, newVal); };
-  const changeShield = async (amount: number) => { if (!myParticipant) return; const newVal = Math.max(0, shield + amount); setShield(newVal); await supabase.from('room_participants').update({ current_shield: newVal }).eq('id', myParticipant.id); };
-  const handleLeaveRoom = async () => { if (channelRef.current) supabase.removeChannel(channelRef.current); await supabase.from('room_participants').delete().eq('room_code', roomCode).eq('user_id', userId); onExitGame(); };
-  const handleRemovePassive = (skillId: string) => { setMySkills(prev => prev.filter(s => s.id !== skillId)); };
-  const handlePressPassive = (skill: CharacterSkill) => { showCustomAlert(skill.name, skill.description, 'info', () => handleRemovePassive(skill.id), true, undefined, "REMOVER", "FECHAR"); };
-  const removeStatusEffect = async (effectName: string, type: 'buff' | 'debuff') => { if (!myParticipant) return; if (type === 'buff') { const newArr = (myParticipant.active_buffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_buffs: newArr }).eq('id', myParticipant.id); } else { const newArr = (myParticipant.active_debuffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_debuffs: newArr }).eq('id', myParticipant.id); } };
-  const handlePressStatusEffect = (effect: ActiveStatusEffect, type: 'buff' | 'debuff') => { let detailText = effect.description ? effect.description : "Sem descrição."; detailText += `\n\nDuração: ${getVisualDuration(effect.duration, type)}`; if(effect.damage) detailText += `\nDano: ${effect.damage}`; showCustomAlert(effect.name, detailText, type === 'buff' ? 'info' : 'damage', () => removeStatusEffect(effect.name, type), true, undefined, "REMOVER", "FECHAR"); };
-  const activateSkill = async (skill: CharacterSkill) => { if (skill.type === 'transformation') { const currentList = myParticipant?.active_transformations || []; if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } let durationToSave = 4; if (skill.duration === -1) { durationToSave = -1; } else if (skill.duration && skill.duration > 0) { durationToSave = skill.duration + 1; } const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`; showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); } else { const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); } setSkillsModalVisible(false); };
-  const removeTransformation = async (transName: string) => { if(!myParticipant) return; const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName); await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id); showCustomAlert("Info", "Destransformado com sucesso!", 'info'); };
-  const openEffectList = (type: 'buff' | 'debuff') => { setTargetEffectType(type); setEffectsListModalVisible(true); };
-  const applyStatusEffect = async (effect: StatusEffect) => { if (!myParticipant) return; const baseDuration = (effect.duration && effect.duration > 0) ? effect.duration : 0; const finalDuration = targetEffectType === 'buff' ? (baseDuration > 0 ? baseDuration + 1 : 0) : baseDuration; const newEffect: ActiveStatusEffect = { name: effect.title, description: effect.description, damage: effect.damage, duration: finalDuration }; if (targetEffectType === 'buff') { const currentBuffs = myParticipant.active_buffs || []; if (currentBuffs.some(b => b.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse buff."); return; } await supabase.from('room_participants').update({ active_buffs: [...currentBuffs, newEffect] }).eq('id', myParticipant.id); } else { const currentDebuffs = myParticipant.active_debuffs || []; if (currentDebuffs.some(d => d.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse debuff."); return; } await supabase.from('room_participants').update({ active_debuffs: [...currentDebuffs, newEffect] }).eq('id', myParticipant.id); } setEffectsListModalVisible(false); };
-  const getVisualDuration = (dur: number, type: 'buff' | 'debuff' | 'trans') => { if (dur < 0) return '∞'; if (dur <= 0) return '∞'; if (type === 'debuff') return `${dur}`; return `${Math.max(dur - 1, 0)}`; };
-  const getPhaseLabel = (phase?: string) => { switch(phase) { case 'main': return "MAIN"; case 'end': return "END"; default: return "INIT"; } };
-  const getButtonLabel = (phase?: string) => { switch(phase) { case 'initial': return "MAIN 🛡️"; case 'main': return "END 🏁"; case 'end': return "TURN ⏭️"; default: return "INICIAR"; } };
-  const getPhaseColor = (phase?: string) => { switch(phase) { case 'main': return "#00B37E"; case 'end': return "#FFD700"; default: return "#8257e5"; } };
-  const getSkillSubtypeLabel = (type?: string) => { switch(type) { case 'general': return 'EQUIPE'; case 'transformed': return 'TRANSF.'; default: return 'INDIV.'; } };
-  const getSkillSubtypeColor = (type?: string) => { switch(type) { case 'general': return '#00B37E'; case 'transformed': return '#ff4444'; default: return '#8257e5'; } };
+  // ===========================================================================
+  // 7. RENDER
+  // ===========================================================================
 
   if (!myParticipant || !room) return <View style={styles.loading}><ActivityIndicator size="large" color="#8257e5" /><Text style={{color:'#fff'}}>Carregando...</Text><TouchableOpacity onPress={onExitGame} style={{marginTop:20, padding:10, backgroundColor:'#333', borderRadius:8}}><Text style={{color:'#fff'}}>Sair</Text></TouchableOpacity></View>;
-
-  const isMyTurn = room.current_turn_participant_id === myParticipant.id;
-  const currentPhase = room.turn_phase || 'initial';
-  const currentPlayer = participants.find(p => p.id === room.current_turn_participant_id);
-  const transformations = mySkills.filter(s => s.type === 'transformation');
-  const activeSkills = mySkills.filter(s => s.type === 'active');
-  const passives = mySkills.filter(s => s.type === 'passive');
-  const filteredEffects = catalogEffects.filter(e => e.type === targetEffectType);
-  
-  const getNotifyColor = () => { switch(notificationData.type) { case 'victory': return '#FFD700'; case 'damage': return '#ff4444'; default: return '#8257e5'; } };
-  const myBannerActive = (myParticipant.challenge_completed || challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`]) && myChar?.challenge_banner_url;
 
   return (
     <View style={styles.container}>
@@ -486,7 +562,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         
         {/* BANNER PRINCIPAL DO JOGADOR */}
         <View style={[styles.charArea, !myBannerActive && {backgroundColor: '#2A2A2E'}]}>
-            {myBannerActive && ( <Image source={{ uri: myChar.challenge_banner_url }} style={styles.bannerBackground} resizeMode="cover" /> )}
+            {myBannerActive && ( <Image source={{ uri: myChar?.challenge_banner_url }} style={styles.bannerBackground} resizeMode="cover" /> )}
             {myBannerActive && <View style={styles.bannerOverlay} />}
             <View style={styles.charImageContainer}>
                 {myChar?.image_url ? <Image source={{ uri: myChar.image_url }} style={styles.charImage} /> : <View style={styles.charPlaceholder}><Ionicons name="person" size={40} color="#fff" /></View>}
@@ -504,7 +580,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                    )}
                 </View>
                 {myBannerActive && (<View style={[styles.textBox, {backgroundColor: 'rgba(255, 215, 0, 0.2)', borderWidth:1, borderColor:'#FFD700', marginBottom:2}]}><View style={{flexDirection:'row', alignItems:'center'}}><Ionicons name="trophy" size={10} color="#FFD700" style={{marginRight:4}}/><Text style={{color:'#FFD700', fontSize:10, fontWeight:'bold'}}>DESAFIO COMPLETO</Text></View></View>)}
-                <View style={{flexDirection:'row', flexWrap:'wrap'}}><View style={styles.textBox}><Text style={styles.playerNameTag}>({myParticipant.username})</Text></View>{myChar?.category && (<View style={[styles.textBox, {marginLeft:5}]}><Text style={[styles.playerNameTag, {color:'#FFD700', fontWeight:'bold'}]}>{myChar.category.toUpperCase()}</Text></View>)}</View>
+                <View style={{flexDirection:'row', flexWrap:'wrap'}}><View style={styles.textBox}><Text style={styles.playerNameTag}>({myParticipant?.username})</Text></View>{myChar?.category && (<View style={[styles.textBox, {marginLeft:5}]}><Text style={[styles.playerNameTag, {color:'#FFD700', fontWeight:'bold'}]}>{myChar.category.toUpperCase()}</Text></View>)}</View>
             </View>
         </View>
 
@@ -534,7 +610,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
                             {/* LINHA 2: CONTROLES DE HP */}
                             <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
-                                {/* MAX HP */}
                                 <View style={{flexDirection:'row', alignItems:'center'}}>
                                     <Text style={{color:'#777', fontSize:10, marginRight:4}}>Max:</Text>
                                     <TouchableOpacity onPress={() => changeUnitMaxHp(idx, -1)}><Ionicons name="remove-circle" size={20} color="#555"/></TouchableOpacity>
@@ -542,7 +617,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                                     <TouchableOpacity onPress={() => changeUnitMaxHp(idx, 1)}><Ionicons name="add-circle" size={20} color="#555"/></TouchableOpacity>
                                 </View>
 
-                                {/* CURRENT HP */}
                                 <View style={styles.unitControls}>
                                     <TouchableOpacity onPress={() => changeUnitHp(idx, -10)} style={[styles.miniBtn, {backgroundColor:'#330000', width:28, height:28, marginRight:4}]}><Text style={{color:'#ff4444', fontSize:10, fontWeight:'bold'}}>-10</Text></TouchableOpacity>
                                     <TouchableOpacity onPress={() => changeUnitHp(idx, -1)} style={[styles.miniBtn, {backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={16} color="#fff"/></TouchableOpacity>
@@ -570,13 +644,19 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 <TouchableOpacity onPress={() => openEffectList('buff')}><Ionicons name="add-circle" size={24} color="#00B37E" /></TouchableOpacity>
             </View>
             <View style={{flexDirection:'row', flexWrap:'wrap', minHeight: 30}}>
-                {(!myParticipant.active_buffs?.length && !buffs) ? <Text style={{color:'#555', fontStyle:'italic', fontSize:12, marginTop:5}}>Nenhum buff ou passiva ativa.</Text> : null}
-                {myParticipant.active_buffs?.map((b, idx) => (
-                    <TouchableOpacity key={`ab-${idx}`} style={[styles.activeTransBadge, {borderColor:'#00B37E', backgroundColor:'rgba(0, 179, 126, 0.1)', flexDirection:'row', alignItems:'center'}]} onPress={() => handlePressStatusEffect(b, 'buff')}>
-                        <Text style={[styles.activeTransText, {color:'#00B37E', marginRight:5}]}>{b.name} ({getVisualDuration(b.duration, 'buff')})</Text>
-                        <Ionicons name="information-circle-outline" size={14} color="#00B37E" />
-                    </TouchableOpacity>
-                ))}
+                {(!myParticipant?.active_buffs?.length && !buffs) ? <Text style={{color:'#555', fontStyle:'italic', fontSize:12, marginTop:5}}>Nenhum buff ou passiva ativa.</Text> : null}
+                {myParticipant?.active_buffs?.map((b, idx) => {
+                    const isTransformedBuff = b.name.includes('(Transf.)');
+                    const color = isTransformedBuff ? '#FF8800' : '#00B37E';
+                    const bgColor = isTransformedBuff ? 'rgba(255, 136, 0, 0.2)' : 'rgba(0, 179, 126, 0.1)';
+
+                    return (
+                        <TouchableOpacity key={`ab-${idx}`} style={[styles.activeTransBadge, {borderColor: color, backgroundColor: bgColor, flexDirection:'row', alignItems:'center'}]} onPress={() => handlePressStatusEffect(b, 'buff')}>
+                            <Text style={[styles.activeTransText, {color: color, marginRight:5}]}>{b.name} ({getVisualDuration(b.duration, 'buff')})</Text>
+                            <Ionicons name="information-circle-outline" size={14} color={color} />
+                        </TouchableOpacity>
+                    );
+                })}
             </View>
         </View>
 
@@ -586,8 +666,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 <TouchableOpacity onPress={() => openEffectList('debuff')}><Ionicons name="add-circle" size={24} color="#ff4444" /></TouchableOpacity>
             </View>
             <View style={{flexDirection:'row', flexWrap:'wrap', minHeight: 30}}>
-                {(!myParticipant.active_debuffs?.length && !debuffs) ? <Text style={{color:'#555', fontStyle:'italic', fontSize:12, marginTop:5}}>Nenhum debuff.</Text> : null}
-                {myParticipant.active_debuffs?.map((d, idx) => (
+                {(!myParticipant?.active_debuffs?.length && !debuffs) ? <Text style={{color:'#555', fontStyle:'italic', fontSize:12, marginTop:5}}>Nenhum debuff.</Text> : null}
+                {myParticipant?.active_debuffs?.map((d, idx) => (
                     <TouchableOpacity key={`ad-${idx}`} style={[styles.activeTransBadge, {borderColor:'#ff4444', backgroundColor:'rgba(255, 68, 68, 0.1)', flexDirection:'row', alignItems:'center'}]} onPress={() => handlePressStatusEffect(d, 'debuff')}>
                         <Text style={[styles.activeTransText, {color:'#ff4444', marginRight:5}]}>{d.name} {d.damage ? `[${d.damage}]` : ''} ({getVisualDuration(d.duration, 'debuff')})</Text>
                         <Ionicons name="information-circle-outline" size={14} color="#ff4444" />
@@ -596,7 +676,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
             </View>
         </View>
 
-        {myParticipant.active_transformations && myParticipant.active_transformations.length > 0 && (
+        {myParticipant?.active_transformations && myParticipant.active_transformations.length > 0 && (
             <View style={[styles.statsCard, {marginBottom:10}]}>
                 <Text style={[styles.label, {color:'#FFD700', marginBottom:5}]}>TRANSFORMAÇÕES:</Text>
                 <View style={{flexDirection:'row', flexWrap:'wrap'}}>
@@ -614,7 +694,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         <Text style={styles.sectionTitle}>Grupo</Text>
         {participants.map(p => {
            const pChar = p.selected_character_id ? charactersMap[p.selected_character_id] : null;
-           const isCurrent = room.current_turn_participant_id === p.id;
+           const isCurrent = room?.current_turn_participant_id === p.id;
            const showRowBanner = (p.challenge_completed || challengesCompletedMap[`${p.user_id}_${p.selected_character_id}`]) && pChar?.challenge_banner_url;
 
            return (
@@ -643,19 +723,18 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         })}
       </ScrollView>
 
-      {/* FOOTER */}
       <View style={styles.footer}>
         {isMyTurn ? (
             <TouchableOpacity style={[styles.passTurnButton, {backgroundColor: getPhaseColor(currentPhase)}]} onPress={handlePhaseAction} disabled={processingPhase}>
                 {processingPhase ? <ActivityIndicator color="#000" /> : <Text style={styles.passTurnText}>{getButtonLabel(currentPhase)}</Text>}
             </TouchableOpacity>
         ) : (
-            <View style={styles.waitingBox}><ActivityIndicator size="small" color="#aaa" style={{marginRight: 10}}/><Text style={styles.waitingText}>Aguardando {currentPlayer?.username} ({getPhaseLabel(room.turn_phase)})</Text></View>
+            <View style={styles.waitingBox}><ActivityIndicator size="small" color="#aaa" style={{marginRight: 10}}/><Text style={styles.waitingText}>Aguardando {currentPlayer?.username} ({getPhaseLabel(room?.turn_phase)})</Text></View>
         )} 
         <TouchableOpacity style={styles.exitButton} onPress={handleLeaveRoom}><Text style={{color:'#777'}}>Sair</Text></TouchableOpacity>
       </View>
 
-      {/* MODAL SKILLS (ATUALIZADO) */}
+      {/* MODAL SKILLS (MANTIDOS) */}
       <Modal animationType="slide" transparent={true} visible={skillsModalVisible} onRequestClose={() => setSkillsModalVisible(false)}>
         <View style={styles.modalOverlay}>
             <View style={[styles.styledModalContent, {borderColor:'#8257e5'}]}>
@@ -666,6 +745,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 <ScrollView>
                     {myChar?.category === 'equipe' ? (
                         <View>
+                             {/* SEÇÃO HABILIDADES GERAIS */}
                              <View style={{marginBottom: 20, borderBottomWidth: 1, borderBottomColor:'#333', paddingBottom: 10}}>
                                 <Text style={{color:'#00B37E', fontWeight:'bold', fontSize:14, marginBottom:10}}>HABILIDADES GERAIS</Text>
                                 {(() => {
@@ -680,12 +760,13 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                                     ));
                                 })()}
                              </View>
-                             {myParticipant.team_state && myParticipant.team_state.length > 0 ? (
+                             {/* SEÇÃO INDIVIDUAL DOS MEMBROS */}
+                             {myParticipant?.team_state && myParticipant.team_state.length > 0 ? (
                                  myParticipant.team_state.map((activeMember, index) => {
                                      const originalMemberData = myChar.team_members?.find(m => m.name === activeMember.name);
                                      const memberSkills = (originalMemberData?.skills || []).filter(s => s.passive_type !== 'general' && s.active_type !== 'general');
                                      const currentUnitLevel = activeMember.current_level || 1;
-                                     const showLevel = myChar.has_level_system; // Só mostra nível se tiver sistema
+                                     const showLevel = myChar.has_level_system; 
 
                                      return (
                                          <View key={index} style={{marginBottom: 20}}>
@@ -693,7 +774,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                                              {memberSkills.length === 0 ? (<Text style={{color:'#777', fontStyle:'italic'}}>Sem habilidades.</Text>) : (
                                                  memberSkills.map((s, sIdx) => {
                                                     const requiredLevel = s.unlock_level || 1;
-                                                    // Se não tem sistema de nível, ignora a trava (considera destravado)
                                                     const isLocked = showLevel ? (currentUnitLevel < requiredLevel) : false;
                                                     
                                                     return (
@@ -737,7 +817,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         </View>
       </Modal>
 
-      {/* OUTROS MODAIS MANTIDOS... */}
+      {/* OUTROS MODAIS (MANTIDOS) */}
       <Modal animationType="fade" transparent={true} visible={notificationVisible} onRequestClose={() => setNotificationVisible(false)}>
         <View style={styles.modalOverlay}>
             <View style={[styles.styledModalContent, {borderColor: getNotifyColor(), minHeight: 200, justifyContent:'center'}]}>
@@ -815,7 +895,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#121214', paddingTop: 50 },
   loading: { flex: 1, backgroundColor: '#121214', justifyContent:'center', alignItems:'center' },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: 180 }, 
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 220 }, // Aumentado para evitar corte
   turnHeader: { backgroundColor: '#202024', paddingHorizontal: 15, paddingBottom: 10, paddingTop: 35, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#333', flexDirection:'row', justifyContent:'space-between' },
   myTurnHeader: { backgroundColor: '#3e2e6b', borderBottomColor: '#8257e5' },
   turnText: { color: '#fff', fontSize: 14, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 1 },
@@ -845,7 +925,20 @@ const styles = StyleSheet.create({
   pName: { color: '#fff', fontSize: 16 },
   pSubName: { color: '#ddd', fontSize: 12 },
   pHp: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  footer: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 20, backgroundColor: '#121214', borderTopWidth: 1, borderTopColor: '#333', elevation: 10 },
+  // FOOTER CORRIGIDO COM PADDING BOTTOM MAIOR
+  footer: { 
+      position: 'absolute', 
+      bottom: 0, 
+      left: 0, 
+      right: 0, 
+      backgroundColor: '#121214', 
+      borderTopWidth: 1, 
+      borderTopColor: '#333', 
+      elevation: 10,
+      paddingHorizontal: 20,
+      paddingTop: 20,
+      paddingBottom: 50 // Espaço para nav bar do Android
+  },
   passTurnButton: { backgroundColor: '#FFD700', padding: 18, borderRadius: 12, alignItems: 'center', elevation: 5 },
   passTurnText: { color: '#000', fontWeight: 'bold', fontSize: 16 },
   waitingBox: { backgroundColor: '#202024', padding: 15, borderRadius: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center' },
