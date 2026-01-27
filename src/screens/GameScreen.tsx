@@ -21,7 +21,11 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const [myParticipant, setMyParticipant] = useState<RoomParticipant | null>(null);
   const [charactersMap, setCharactersMap] = useState<Record<string, GameCharacter>>({});
   
+  // STATES DE SKILLS E NIVEL
+  const [allRawSkills, setAllRawSkills] = useState<CharacterSkill[]>([]);
   const [mySkills, setMySkills] = useState<CharacterSkill[]>([]);
+  const [currentLevel, setCurrentLevel] = useState(1);
+
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
   const [challengesCompletedMap, setChallengesCompletedMap] = useState<Record<string, boolean>>({});
 
@@ -64,6 +68,14 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     return () => { if (channelRef.current) supabase.removeChannel(channelRef.current); };
   }, []);
 
+  // --- FILTRO DE SKILLS POR NÍVEL ---
+  useEffect(() => {
+      if (allRawSkills.length > 0) {
+          const unlocked = allRawSkills.filter(s => (s.unlock_level || 1) <= currentLevel);
+          setMySkills(unlocked);
+      }
+  }, [currentLevel, allRawSkills]);
+
   // --- CHECAGEM INICIAL SEGURA ---
   useEffect(() => {
     if (!myParticipant) return;
@@ -84,65 +96,89 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
     }
   }, [myParticipant, charactersMap, initialCheckDone]);
 
-  // --- AUTOMATIZAÇÃO DE PASSIVAS ---
+  // --- AUTOMATIZAÇÃO DE PASSIVAS (ATUALIZADA COM O FILTRO DE NIVEL) ---
   useEffect(() => {
     if (myParticipant && room && initialCheckDone) {
         checkAndApplyPassives();
     }
-  }, [myParticipant?.team_state, initialCheckDone, myParticipant?.selected_character_id]);
+  }, [
+      myParticipant?.team_state, 
+      myParticipant?.active_transformations, 
+      initialCheckDone, 
+      myParticipant?.selected_character_id,
+      mySkills // Importante: Se o nível subir e desbloquear skill, roda isso
+  ]);
 
   const checkAndApplyPassives = async () => {
       if (!myParticipant) return;
       const myChar = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
       if (!myChar) return;
 
-      let currentBuffs = [...(myParticipant.active_buffs || [])];
-      let hasChanges = false;
-      const passivesThatShouldBeActive = new Set<string>();
+      const isTransformed = (myParticipant.active_transformations?.length || 0) > 0;
+      const activeUnitNames = myParticipant.team_state?.map(u => u.name) || [];
+      const currentBuffs = myParticipant.active_buffs || [];
+      const temporaryBuffs = currentBuffs.filter(b => b.duration !== -1);
+      const newPassivesMap = new Map<string, ActiveStatusEffect>();
+
+      const evaluateSkill = (skill: CharacterSkill, memberName?: string) => {
+          if (skill.type !== 'passive') return;
+          const pType = skill.passive_type; 
+          
+          let isOwnerActive = true;
+          if (myChar.category === 'equipe' && memberName) {
+              isOwnerActive = activeUnitNames.includes(memberName);
+          }
+
+          let shouldBeActive = false;
+
+          // Exclusividade
+          if (isTransformed) {
+              if (pType === 'transformed') shouldBeActive = isOwnerActive;
+              else if (pType === 'general_transformed') shouldBeActive = true;
+              else if (pType === 'general') shouldBeActive = true; 
+              else shouldBeActive = false;
+          } else {
+              if (pType === 'individual' || !pType) shouldBeActive = isOwnerActive;
+              else if (pType === 'general') shouldBeActive = true;
+              else shouldBeActive = false;
+          }
+
+          if (shouldBeActive) {
+              const isGen = (pType === 'general' || pType === 'general_transformed');
+              const prefix = isGen ? '[GERAL]' : (memberName ? `[${memberName}]` : '');
+              const transfTag = (pType === 'transformed' || pType === 'general_transformed') ? ' (Transf.)' : '';
+              const buffName = `${prefix} ${skill.name}${transfTag}`.trim();
+              
+              newPassivesMap.set(buffName, {
+                  name: buffName, description: skill.description, duration: -1
+              });
+          }
+      };
 
       if (myChar.category === 'equipe' && myChar.team_members) {
-          const activeUnitNames = myParticipant.team_state?.map(u => u.name) || [];
-          myChar.team_members.forEach(member => {
-              member.skills?.forEach(skill => {
-                  if (skill.type === 'passive') {
-                      const isGeneral = skill.passive_type === 'general';
-                      const isOwnerActive = activeUnitNames.includes(member.name);
-                      if (isGeneral || isOwnerActive) {
-                          const buffName = isGeneral ? `[GERAL] ${skill.name}` : `[${member.name}] ${skill.name}`;
-                          passivesThatShouldBeActive.add(buffName);
-                          if (!currentBuffs.some(b => b.name === buffName)) {
-                              currentBuffs.push({ name: buffName, description: skill.description, duration: -1 });
-                              hasChanges = true;
-                          }
-                      }
-                  }
-              });
-          });
+          myChar.team_members.forEach(m => m.skills?.forEach(s => evaluateSkill(s, m.name)));
       } else if (mySkills.length > 0) {
-          mySkills.forEach(skill => {
-              if (skill.type === 'passive') {
-                  const buffName = skill.name;
-                  passivesThatShouldBeActive.add(buffName);
-                  if (!currentBuffs.some(b => b.name === buffName)) {
-                      currentBuffs.push({ name: buffName, description: skill.description, duration: -1 });
-                      hasChanges = true;
-                  }
-              }
-          });
+          mySkills.forEach(s => evaluateSkill(s));
       }
 
-      const cleanedBuffs = currentBuffs.filter(buff => {
-          if (buff.duration === -1) {
-             const stillActive = passivesThatShouldBeActive.has(buff.name);
-             if (!stillActive) hasChanges = true;
-             return stillActive;
-          }
-          return true;
-      });
+      const calculatedPassives = Array.from(newPassivesMap.values());
+      const finalBuffList = [...temporaryBuffs, ...calculatedPassives];
+      
+      const currentBuffStr = JSON.stringify(currentBuffs.sort((a,b) => a.name.localeCompare(b.name)));
+      const newBuffStr = JSON.stringify(finalBuffList.sort((a,b) => a.name.localeCompare(b.name)));
 
-      if (hasChanges) {
-          await supabase.from('room_participants').update({ active_buffs: cleanedBuffs }).eq('id', myParticipant.id);
+      if (currentBuffStr !== newBuffStr) {
+          await supabase.from('room_participants').update({ active_buffs: finalBuffList }).eq('id', myParticipant.id);
       }
+  };
+
+  // --- FUNÇÃO DE LEVEL UP/DOWN ---
+  const handleLevelChange = async (delta: number) => {
+      const newLevel = Math.max(1, currentLevel + delta);
+      if (newLevel === currentLevel) return;
+
+      setCurrentLevel(newLevel);
+      await supabase.from('room_participants').update({ current_level: newLevel }).eq('id', myParticipant?.id);
   };
 
   const showCustomAlert = (title: string, message: string, type: 'info'|'damage'|'victory' = 'info', onConfirm?: () => void, hasCancel = false, onCancel?: () => void, confirmText = 'CONFIRMAR', cancelText = 'CANCELAR') => {
@@ -243,9 +279,19 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 if (me.current_shield !== undefined && me.current_shield !== shield) setShield(me.current_shield);
                 if (me.buffs !== buffs) setBuffs(me.buffs || '');
                 if (me.debuffs !== debuffs) setDebuffs(me.debuffs || '');
+
+                // CARREGAR NÍVEL DA SALA
+                const roomLvl = me.current_level || 1;
+                if (roomLvl !== currentLevel) setCurrentLevel(roomLvl);
+
                 if (me.selected_character_id && !skillsLoadedRef.current) {
                     const { data: skills } = await supabase.from('character_skills').select('*').eq('character_id', me.selected_character_id);
-                    if (skills) { setMySkills(skills); skillsLoadedRef.current = true; }
+                    if (skills) { 
+                        setAllRawSkills(skills); 
+                        const unlocked = skills.filter(s => (s.unlock_level || 1) <= roomLvl);
+                        setMySkills(unlocked);
+                        skillsLoadedRef.current = true; 
+                    }
                 }
             }
             const charIds2 = parts.map(p => p.selected_character_id).filter(id => id) as string[];
@@ -297,16 +343,32 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
   const processEndTurnLogic = async () => {
       if (!myParticipant) return;
+      
       let updatedTrans = [...(myParticipant.active_transformations || [])];
       let transExpired: string[] = [];
-      updatedTrans = updatedTrans.map(t => ({ ...t, rounds_left: t.rounds_left - 1 })).filter(t => { if (t.rounds_left <= 0) { transExpired.push(t.name); return false; } return true; });
+      
+      updatedTrans = updatedTrans.map(t => {
+          if (t.rounds_left === -1) return t; 
+          return { ...t, rounds_left: t.rounds_left - 1 };
+      }).filter(t => { 
+          if (t.rounds_left === -1) return true; 
+          if (t.rounds_left <= 0) { transExpired.push(t.name); return false; } 
+          return true; 
+      });
+
       let updatedBuffs = [...(myParticipant.active_buffs || [])];
       let buffsExpired: string[] = [];
-      updatedBuffs = updatedBuffs.map(b => ({ ...b, duration: b.duration - 1 })).filter(b => { 
+      
+      updatedBuffs = updatedBuffs.map(b => {
+          if (b.duration === -1) return b; 
+          return { ...b, duration: b.duration - 1 };
+      }).filter(b => { 
+          if (b.duration === -1) return true; 
           if (b.duration < 0) return true; 
           if (b.duration <= 0) { buffsExpired.push(b.name); return false; } 
           return true; 
       });
+
       let updatedDebuffs = [...(myParticipant.active_debuffs || [])];
       let debuffsExpired: string[] = [];
       let totalDamageTaken = 0;
@@ -394,7 +456,37 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const handlePressPassive = (skill: CharacterSkill) => { showCustomAlert(skill.name, skill.description, 'info', () => handleRemovePassive(skill.id), true, undefined, "REMOVER", "FECHAR"); };
   const removeStatusEffect = async (effectName: string, type: 'buff' | 'debuff') => { if (!myParticipant) return; if (type === 'buff') { const newArr = (myParticipant.active_buffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_buffs: newArr }).eq('id', myParticipant.id); } else { const newArr = (myParticipant.active_debuffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_debuffs: newArr }).eq('id', myParticipant.id); } };
   const handlePressStatusEffect = (effect: ActiveStatusEffect, type: 'buff' | 'debuff') => { let detailText = effect.description ? effect.description : "Sem descrição."; detailText += `\n\nDuração: ${getVisualDuration(effect.duration, type)}`; if(effect.damage) detailText += `\nDano: ${effect.damage}`; showCustomAlert(effect.name, detailText, type === 'buff' ? 'info' : 'damage', () => removeStatusEffect(effect.name, type), true, undefined, "REMOVER", "FECHAR"); };
-  const activateSkill = async (skill: CharacterSkill) => { if (skill.type === 'transformation') { const currentList = myParticipant?.active_transformations || []; if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } const baseDuration = (skill.duration && skill.duration > 0) ? skill.duration : 3; const durationWithBuffer = baseDuration + 1; const newList = [...currentList, { name: skill.name, rounds_left: durationWithBuffer }]; await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); showCustomAlert("Transformação!", `${skill.name} ativada por ${baseDuration} rodadas.`, 'info'); } else { const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); } setSkillsModalVisible(false); };
+  
+  const activateSkill = async (skill: CharacterSkill) => { 
+      if (skill.type === 'transformation') { 
+          const currentList = myParticipant?.active_transformations || []; 
+          if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } 
+          
+          let durationToSave = 4; 
+          if (skill.duration === -1) {
+              durationToSave = -1;
+          } else if (skill.duration && skill.duration > 0) {
+              durationToSave = skill.duration + 1; 
+          }
+
+          const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; 
+          await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); 
+          
+          const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`;
+          showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); 
+      } else { 
+          const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); 
+      } 
+      setSkillsModalVisible(false); 
+  };
+
+  const removeTransformation = async (transName: string) => {
+      if(!myParticipant) return;
+      const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName);
+      await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id);
+      showCustomAlert("Info", "Destransformado com sucesso!", 'info');
+  };
+
   const openEffectList = (type: 'buff' | 'debuff') => { setTargetEffectType(type); setEffectsListModalVisible(true); };
   const applyStatusEffect = async (effect: StatusEffect) => { if (!myParticipant) return; const baseDuration = (effect.duration && effect.duration > 0) ? effect.duration : 0; const finalDuration = targetEffectType === 'buff' ? (baseDuration > 0 ? baseDuration + 1 : 0) : baseDuration; const newEffect: ActiveStatusEffect = { name: effect.title, description: effect.description, damage: effect.damage, duration: finalDuration }; if (targetEffectType === 'buff') { const currentBuffs = myParticipant.active_buffs || []; if (currentBuffs.some(b => b.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse buff."); return; } await supabase.from('room_participants').update({ active_buffs: [...currentBuffs, newEffect] }).eq('id', myParticipant.id); } else { const currentDebuffs = myParticipant.active_debuffs || []; if (currentDebuffs.some(d => d.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse debuff."); return; } await supabase.from('room_participants').update({ active_debuffs: [...currentDebuffs, newEffect] }).eq('id', myParticipant.id); } setEffectsListModalVisible(false); };
   const getVisualDuration = (dur: number, type: 'buff' | 'debuff' | 'trans') => { if (dur < 0) return '∞'; if (dur <= 0) return '∞'; if (type === 'debuff') return `${dur}`; return `${Math.max(dur - 1, 0)}`; };
@@ -402,7 +494,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const getButtonLabel = (phase?: string) => { switch(phase) { case 'initial': return "MAIN 🛡️"; case 'main': return "END 🏁"; case 'end': return "TURN ⏭️"; default: return "INICIAR"; } };
   const getPhaseColor = (phase?: string) => { switch(phase) { case 'main': return "#00B37E"; case 'end': return "#FFD700"; default: return "#8257e5"; } };
 
-  // --- HELPER DE LABEL DE SKILL ---
   const getSkillSubtypeLabel = (type?: string) => {
     switch(type) {
         case 'general': return 'EQUIPE';
@@ -425,20 +516,17 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const currentPhase = room.turn_phase || 'initial';
   const myChar = myParticipant.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
   const currentPlayer = participants.find(p => p.id === room.current_turn_participant_id);
-  
   const transformations = mySkills.filter(s => s.type === 'transformation');
   const activeSkills = mySkills.filter(s => s.type === 'active');
   const passives = mySkills.filter(s => s.type === 'passive');
   const filteredEffects = catalogEffects.filter(e => e.type === targetEffectType);
   const reserveMembers = myChar?.team_members || [];
   const activeUnits = myParticipant.team_state || [];
-
   const getNotifyColor = () => { switch(notificationData.type) { case 'victory': return '#FFD700'; case 'damage': return '#ff4444'; default: return '#8257e5'; } };
   const myBannerActive = (myParticipant.challenge_completed || challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`]) && myChar?.challenge_banner_url;
 
   return (
     <View style={styles.container}>
-      {/* ... Header e Scroll ... */}
       <View style={[styles.turnHeader, isMyTurn ? styles.myTurnHeader : {}]}>
         <View style={{flex: 1}}>
             <Text style={styles.turnText}>{isMyTurn ? "🔥 SUA VEZ!" : `Vez de: ${currentPlayer?.username || '...'}`}</Text>
@@ -456,111 +544,58 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         
-        {/* BANNER PRINCIPAL DO JOGADOR (MANTIDO) */}
+        {/* BANNER PRINCIPAL DO JOGADOR */}
         <View style={[styles.charArea, !myBannerActive && {backgroundColor: '#2A2A2E'}]}>
             {myBannerActive && (
                 <Image source={{ uri: myChar.challenge_banner_url }} style={styles.bannerBackground} resizeMode="cover" />
             )}
             {myBannerActive && <View style={styles.bannerOverlay} />}
-
             <View style={styles.charImageContainer}>
-                {myChar?.image_url ? (
-                    <Image source={{ uri: myChar.image_url }} style={styles.charImage} />
-                ) : (
-                    <View style={styles.charPlaceholder}><Ionicons name="person" size={40} color="#fff" /></View>
-                )}
+                {myChar?.image_url ? <Image source={{ uri: myChar.image_url }} style={styles.charImage} /> : <View style={styles.charPlaceholder}><Ionicons name="person" size={40} color="#fff" /></View>}
             </View>
-
             <View style={{flex:1}}>
-                <View style={[styles.textBox, { marginBottom: 5 }]}>
-                    <Text style={styles.charName}>{myChar?.name || 'Unknown'}</Text>
+                <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
+                   <View style={[styles.textBox, { marginBottom: 5 }]}><Text style={styles.charName}>{myChar?.name || 'Unknown'}</Text></View>
+                   {/* CONTROLE DE LEVEL UP/DOWN */}
+                   {myChar?.category !== 'equipe' && (
+                       <View style={{flexDirection:'row', alignItems:'center', backgroundColor:'rgba(0,0,0,0.6)', padding:4, borderRadius:8, borderWidth:1, borderColor:'#FFD700', marginLeft: 10}}>
+                           <TouchableOpacity onPress={() => handleLevelChange(-1)} style={{paddingHorizontal:6, paddingVertical:2}}>
+                               <Ionicons name="remove" size={16} color="#FFD700"/>
+                           </TouchableOpacity>
+                           <Text style={{color:'#FFD700', fontWeight:'bold', fontSize:14, marginHorizontal:2}}>Lv {currentLevel}</Text>
+                           <TouchableOpacity onPress={() => handleLevelChange(1)} style={{paddingHorizontal:6, paddingVertical:2}}>
+                               <Ionicons name="add" size={16} color="#FFD700"/>
+                           </TouchableOpacity>
+                       </View>
+                   )}
                 </View>
-                {myBannerActive && (
-                     <View style={[styles.textBox, {backgroundColor: 'rgba(255, 215, 0, 0.2)', borderWidth:1, borderColor:'#FFD700', marginBottom:2}]}>
-                        <View style={{flexDirection:'row', alignItems:'center'}}>
-                            <Ionicons name="trophy" size={10} color="#FFD700" style={{marginRight:4}}/>
-                            <Text style={{color:'#FFD700', fontSize:10, fontWeight:'bold'}}>DESAFIO COMPLETO</Text>
-                        </View>
-                     </View>
-                )}
-                <View style={{flexDirection:'row', flexWrap:'wrap'}}>
-                    <View style={styles.textBox}>
-                        <Text style={styles.playerNameTag}>({myParticipant.username})</Text>
-                    </View>
-                    {myChar?.category && (
-                        <View style={[styles.textBox, {marginLeft:5}]}>
-                            <Text style={[styles.playerNameTag, {color:'#FFD700', fontWeight:'bold'}]}>{myChar.category.toUpperCase()}</Text>
-                        </View>
-                    )}
-                </View>
+
+                {myBannerActive && (<View style={[styles.textBox, {backgroundColor: 'rgba(255, 215, 0, 0.2)', borderWidth:1, borderColor:'#FFD700', marginBottom:2}]}><View style={{flexDirection:'row', alignItems:'center'}}><Ionicons name="trophy" size={10} color="#FFD700" style={{marginRight:4}}/><Text style={{color:'#FFD700', fontSize:10, fontWeight:'bold'}}>DESAFIO COMPLETO</Text></View></View>)}
+                <View style={{flexDirection:'row', flexWrap:'wrap'}}><View style={styles.textBox}><Text style={styles.playerNameTag}>({myParticipant.username})</Text></View>{myChar?.category && (<View style={[styles.textBox, {marginLeft:5}]}><Text style={[styles.playerNameTag, {color:'#FFD700', fontWeight:'bold'}]}>{myChar.category.toUpperCase()}</Text></View>)}</View>
             </View>
         </View>
 
+        {/* ... (RESTANTE DO CÓDIGO MANTIDO) ... */}
         {myChar?.category === 'equipe' ? (
             <View style={styles.teamContainer}>
                 <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
                     <Text style={styles.label}>UNIDADES ATIVAS</Text>
-                    <TouchableOpacity onPress={() => setDeployMemberModalVisible(true)} style={styles.addMemberBtn}>
-                        <Ionicons name="add" size={16} color="#000" />
-                        <Text style={styles.addMemberText}> Invocar</Text>
-                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setDeployMemberModalVisible(true)} style={styles.addMemberBtn}><Ionicons name="add" size={16} color="#000" /><Text style={styles.addMemberText}> Invocar</Text></TouchableOpacity>
                 </View>
                 {activeUnits.length === 0 ? (
-                    <Text style={{color:'#555', fontStyle:'italic', textAlign:'center', marginVertical:10}}>Nenhuma unidade em campo.</Text>
+                     <TouchableOpacity style={{backgroundColor:'rgba(255, 215, 0, 0.1)', borderWidth:1, borderColor:'#FFD700', padding:20, borderRadius:8, alignItems:'center', borderStyle:'dashed', marginTop:10}} onPress={() => setDeployMemberModalVisible(true)}><Ionicons name="people" size={32} color="#FFD700" /><Text style={{color:'#FFD700', fontWeight:'bold', marginTop:10}}>NENHUMA UNIDADE EM CAMPO</Text><Text style={{color:'#aaa', fontSize:12, marginTop:5}}>Toque para invocar seu primeiro membro</Text></TouchableOpacity>
                 ) : (
-                    activeUnits.map((unit, idx) => (
-                        <View key={`${unit.name}-${idx}`} style={styles.unitRow}>
-                            <Text style={styles.unitName}>{unit.name}</Text>
-                            <View style={styles.unitControls}>
-                                <TouchableOpacity onPress={() => changeUnitHp(idx, -1)} style={[styles.miniBtn, {backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={16} color="#fff"/></TouchableOpacity>
-                                <Text style={styles.unitHp}>{unit.current_hp}</Text>
-                                <TouchableOpacity onPress={() => changeUnitHp(idx, 1)} style={[styles.miniBtn, {backgroundColor:'#00B37E'}]}><Ionicons name="add" size={16} color="#fff"/></TouchableOpacity>
-                            </View>
-                        </View>
-                    ))
+                    activeUnits.map((unit, idx) => (<View key={`${unit.name}-${idx}`} style={styles.unitRow}><Text style={styles.unitName}>{unit.name}</Text><View style={styles.unitControls}><TouchableOpacity onPress={() => changeUnitHp(idx, -1)} style={[styles.miniBtn, {backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={16} color="#fff"/></TouchableOpacity><Text style={styles.unitHp}>{unit.current_hp}</Text><TouchableOpacity onPress={() => changeUnitHp(idx, 1)} style={[styles.miniBtn, {backgroundColor:'#00B37E'}]}><Ionicons name="add" size={16} color="#fff"/></TouchableOpacity></View></View>))
                 )}
-                <Text style={{color:'#777', fontSize:10, textAlign:'center', marginTop:5}}>HP TOTAL DO EXÉRCITO: {hp}</Text>
+                <Text style={{color:'#777', fontSize:10, textAlign:'center', marginTop:10}}>HP TOTAL DO EXÉRCITO: {hp}</Text>
             </View>
         ) : (
             <>
-                {maxShield > 0 && (
-                    <View style={[styles.statsCard, {borderColor: '#29B6F6', borderWidth: 1}]}>
-                        <View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}>
-                            <Text style={[styles.label, {color:'#29B6F6'}]}>ESCUDO</Text>
-                            <Text style={{color:'#29B6F6', fontWeight:'bold'}}>Max: {maxShield}</Text>
-                        </View>
-                        <View style={styles.hpControls}>
-                            <TouchableOpacity onPress={() => changeShield(-10)} style={styles.smallCtrlBtn}><Text style={styles.smallCtrlText}>-10</Text></TouchableOpacity>
-                            <TouchableOpacity onPress={() => changeShield(-1)} style={[styles.hpBtn, {backgroundColor: '#333', borderWidth:1, borderColor:'#29B6F6'}]}><Ionicons name="remove" size={32} color="#29B6F6" /></TouchableOpacity>
-                            <View style={styles.hpDisplay}><Text style={[styles.hpValue, {color:'#29B6F6'}]}>{shield}</Text></View>
-                            <TouchableOpacity onPress={() => changeShield(1)} style={[styles.hpBtn, {backgroundColor: '#333', borderWidth:1, borderColor:'#29B6F6'}]}><Ionicons name="add" size={32} color="#29B6F6" /></TouchableOpacity>
-                            <TouchableOpacity onPress={() => changeShield(10)} style={styles.smallCtrlBtn}><Text style={styles.smallCtrlText}>+10</Text></TouchableOpacity>
-                        </View>
-                    </View>
-                )}
-
-                <View style={styles.statsCard}>
-                    <View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}>
-                        <Text style={styles.label}>{myChar?.category === 'hit' ? "HITS (VIDA FIXA)" : "HP"}</Text>
-                        <View style={{flexDirection:'row', alignItems:'center'}}>
-                            <Text style={[styles.label, {color:'#777', marginRight:5}]}>Max:</Text>
-                            <TouchableOpacity onPress={() => changeMaxHp(-1)}><Ionicons name="remove-circle" color="#555" size={24}/></TouchableOpacity>
-                            <Text style={{color:'#fff', fontWeight:'bold', marginHorizontal:5, fontSize:16}}>{maxHp}</Text>
-                            <TouchableOpacity onPress={() => changeMaxHp(1)}><Ionicons name="add-circle" color="#555" size={24}/></TouchableOpacity>
-                        </View>
-                    </View>
-                    <View style={styles.hpControls}>
-                        <TouchableOpacity onPress={() => changeHp(-10)} style={[styles.smallCtrlBtn, {backgroundColor:'#330000'}]}><Text style={[styles.smallCtrlText, {color:'#ff4444'}]}>-10</Text></TouchableOpacity>
-                        <TouchableOpacity onPress={() => changeHp(-1)} style={[styles.hpBtn, {backgroundColor: '#ff4444'}]}><Ionicons name="remove" size={32} color="#fff" /></TouchableOpacity>
-                        <View style={styles.hpDisplay}><Text style={styles.hpValue}>{hp}</Text></View>
-                        <TouchableOpacity onPress={() => changeHp(1)} style={[styles.hpBtn, {backgroundColor: '#00B37E'}]}><Ionicons name="add" size={32} color="#fff" /></TouchableOpacity>
-                        <TouchableOpacity onPress={() => changeHp(10)} style={[styles.smallCtrlBtn, {backgroundColor:'#003300'}]}><Text style={[styles.smallCtrlText, {color:'#00B37E'}]}>+10</Text></TouchableOpacity>
-                    </View>
-                </View>
+                {maxShield > 0 && (<View style={[styles.statsCard, {borderColor: '#29B6F6', borderWidth: 1}]}><View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}><Text style={[styles.label, {color:'#29B6F6'}]}>ESCUDO</Text><Text style={{color:'#29B6F6', fontWeight:'bold'}}>Max: {maxShield}</Text></View><View style={styles.hpControls}><TouchableOpacity onPress={() => changeShield(-10)} style={styles.smallCtrlBtn}><Text style={styles.smallCtrlText}>-10</Text></TouchableOpacity><TouchableOpacity onPress={() => changeShield(-1)} style={[styles.hpBtn, {backgroundColor: '#333', borderWidth:1, borderColor:'#29B6F6'}]}><Ionicons name="remove" size={32} color="#29B6F6" /></TouchableOpacity><View style={styles.hpDisplay}><Text style={[styles.hpValue, {color:'#29B6F6'}]}>{shield}</Text></View><TouchableOpacity onPress={() => changeShield(1)} style={[styles.hpBtn, {backgroundColor: '#333', borderWidth:1, borderColor:'#29B6F6'}]}><Ionicons name="add" size={32} color="#29B6F6" /></TouchableOpacity><TouchableOpacity onPress={() => changeShield(10)} style={styles.smallCtrlBtn}><Text style={styles.smallCtrlText}>+10</Text></TouchableOpacity></View></View>)}
+                <View style={styles.statsCard}><View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}><Text style={styles.label}>{myChar?.category === 'hit' ? "HITS (VIDA FIXA)" : "HP"}</Text><View style={{flexDirection:'row', alignItems:'center'}}><Text style={[styles.label, {color:'#777', marginRight:5}]}>Max:</Text><TouchableOpacity onPress={() => changeMaxHp(-1)}><Ionicons name="remove-circle" color="#555" size={24}/></TouchableOpacity><Text style={{color:'#fff', fontWeight:'bold', marginHorizontal:5, fontSize:16}}>{maxHp}</Text><TouchableOpacity onPress={() => changeMaxHp(1)}><Ionicons name="add-circle" color="#555" size={24}/></TouchableOpacity></View></View><View style={styles.hpControls}><TouchableOpacity onPress={() => changeHp(-10)} style={[styles.smallCtrlBtn, {backgroundColor:'#330000'}]}><Text style={[styles.smallCtrlText, {color:'#ff4444'}]}>-10</Text></TouchableOpacity><TouchableOpacity onPress={() => changeHp(-1)} style={[styles.hpBtn, {backgroundColor: '#ff4444'}]}><Ionicons name="remove" size={32} color="#fff" /></TouchableOpacity><View style={styles.hpDisplay}><Text style={styles.hpValue}>{hp}</Text></View><TouchableOpacity onPress={() => changeHp(1)} style={[styles.hpBtn, {backgroundColor: '#00B37E'}]}><Ionicons name="add" size={32} color="#fff" /></TouchableOpacity><TouchableOpacity onPress={() => changeHp(10)} style={[styles.smallCtrlBtn, {backgroundColor:'#003300'}]}><Text style={[styles.smallCtrlText, {color:'#00B37E'}]}>+10</Text></TouchableOpacity></View></View>
             </>
         )}
 
-        {/* BUFFS E SKILLS (MANTIDOS) */}
         <View style={[styles.statsCard, {marginBottom:10}]}>
             <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:5}}>
                 <Text style={[styles.label, {color:'#00B37E', marginBottom:0}]}>BUFFS / PASSIVAS</Text>
@@ -598,7 +633,9 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 <Text style={[styles.label, {color:'#FFD700', marginBottom:5}]}>TRANSFORMAÇÕES:</Text>
                 <View style={{flexDirection:'row', flexWrap:'wrap'}}>
                     {myParticipant.active_transformations.map((t, idx) => (
-                        <View key={`t-${idx}`} style={styles.activeTransBadge}><Text style={styles.activeTransText}>{t.name} ({getVisualDuration(t.rounds_left, 'trans')} rnds)</Text></View>
+                        <TouchableOpacity key={`t-${idx}`} style={styles.activeTransBadge} onPress={() => removeTransformation(t.name)}>
+                            <Text style={styles.activeTransText}>{t.name} ({getVisualDuration(t.rounds_left, 'trans')} rnds) ✖️</Text>
+                        </TouchableOpacity>
                     ))}
                 </View>
             </View>
@@ -610,44 +647,25 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         {participants.map(p => {
            const pChar = p.selected_character_id ? charactersMap[p.selected_character_id] : null;
            const isCurrent = room.current_turn_participant_id === p.id;
-           
            const showRowBanner = (p.challenge_completed || challengesCompletedMap[`${p.user_id}_${p.selected_character_id}`]) && pChar?.challenge_banner_url;
 
            return (
-               // CONTAINER DO GRUPO (USANDO CAMADAS MANUAIS - CORRIGIDO)
                <View key={p.id} style={[styles.participantRow, isCurrent ? styles.activeRowBorder : {}, !showRowBanner && {backgroundColor: '#202024'}]}>
-                   
-                   {/* CAMADA 1: BANNER (ABSOLUTO) */}
-                   {showRowBanner && (
-                        <Image source={{ uri: pChar?.challenge_banner_url }} style={styles.rowBannerBackground} resizeMode="cover" />
-                   )}
-
-                   {/* CAMADA 2: OVERLAY (ABSOLUTO) */}
-                   {showRowBanner && (
-                        <View style={styles.rowBannerOverlay} />
-                   )}
-
-                   {/* CAMADA 3: CONTEÚDO */}
+                   {showRowBanner && <Image source={{ uri: pChar?.challenge_banner_url }} style={styles.rowBannerBackground} resizeMode="cover" />}
+                   {showRowBanner && <View style={styles.rowBannerOverlay} />}
                    <View style={{flex: 1}}>
                        <View style={{flexDirection:'row', alignItems:'center'}}>
                            {isCurrent && <Ionicons name="caret-forward" color="#FFD700" size={16} style={{marginRight: 5}} />}
                            <Text style={[styles.pName, {color: isCurrent ? '#FFD700' : '#FFF'}]}>{p.username}</Text>
                        </View>
-
-                       <Text style={[styles.pSubName, {color:'#DDD'}]}>
-                           {pChar?.name} 
-                           {pChar?.category === 'equipe' && ` (${p.team_state?.length || 0} unidades)`}
-                       </Text>
-
+                       <Text style={[styles.pSubName, {color:'#DDD'}]}>{pChar?.name} {pChar?.category === 'equipe' && ` (${p.team_state?.length || 0} unidades)`}</Text>
                        {(p.current_shield || 0) > 0 && (<Text style={{color:'#29B6F6', fontSize:10, fontWeight:'bold', marginTop:2}}>🛡️ {p.current_shield}</Text>)}
-                       
                        <View style={{flexDirection:'row', flexWrap:'wrap', marginTop:2}}>
                            {p.active_transformations?.map((t, idx) => (<Text key={`t-${idx}`} style={{color:'#FFD700', fontSize:10, marginRight:5}}>★ {t.name}</Text>))}
                            {p.active_buffs?.map((b, idx) => (<Text key={`b-${idx}`} style={{color:'#00B37E', fontSize:10, marginRight:5}}>↑ {b.name}</Text>))}
                            {p.active_debuffs?.map((d, idx) => (<Text key={`d-${idx}`} style={{color:'#ff4444', fontSize:10, marginRight:5}}>↓ {d.name}</Text>))}
                        </View>
                    </View>
-                   
                    <View style={{alignItems:'center', justifyContent:'center', minWidth:40}}>
                        {(p.active_debuffs && p.active_debuffs.length > 0) && <Ionicons name="skull" color="#ff4444" size={12} style={{marginBottom: 2}} />}
                        <Text style={[styles.pHp, p.current_hp === 0 ? {color:'#ff4444'} : {color:'#FFF'}]}>{p.current_hp}/{p.max_hp}</Text>
@@ -657,7 +675,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         })}
       </ScrollView>
 
-      {/* FOOTER, MODAIS... (MANTIDOS IGUAIS) */}
       <View style={styles.footer}>
         {isMyTurn ? (
             <TouchableOpacity style={[styles.passTurnButton, {backgroundColor: getPhaseColor(currentPhase)}]} onPress={handlePhaseAction} disabled={processingPhase}>
@@ -669,7 +686,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         <TouchableOpacity style={styles.exitButton} onPress={handleLeaveRoom}><Text style={{color:'#777'}}>Sair</Text></TouchableOpacity>
       </View>
 
-      {/* OUTROS MODAIS MANTIDOS... */}
       <Modal animationType="fade" transparent={true} visible={notificationVisible} onRequestClose={() => setNotificationVisible(false)}>
         <View style={styles.modalOverlay}>
             <View style={[styles.styledModalContent, {borderColor: getNotifyColor(), minHeight: 200, justifyContent:'center'}]}>
@@ -690,7 +706,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                     <Text style={[styles.styledModalTitle, {color:'#FFD700'}]}>{(myParticipant?.team_state?.length || 0) === 0 ? "🛡️ CONVOCAR LÍDER" : "⚔️ REFORÇOS"}</Text>
                     {(myParticipant?.team_state?.length || 0) > 0 && (<TouchableOpacity onPress={() => setDeployMemberModalVisible(false)}><Ionicons name="close" size={28} color="#ccc" /></TouchableOpacity>)}
                 </View>
-                {reserveMembers.length === 0 ? (<Text style={{color:'#777', textAlign:'center', marginVertical:20}}>Sem reserva disponível.</Text>) : (
+                {reserveMembers.length === 0 ? (<Text style={{color:'#777', textAlign:'center', marginVertical:20}}>Sem reserva disponível (Todos em campo).</Text>) : (
                     <FlatList data={reserveMembers} keyExtractor={(item, index) => `${item.name}-${index}`} renderItem={({item}) => (
                         <TouchableOpacity style={styles.cardItem} onPress={() => handleAddMemberToField(item)}>
                             <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', flex:1}}>
@@ -704,72 +720,41 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         </View>
       </Modal>
 
-      {/* ARSENAL MODAL (SKILLS) */}
       <Modal animationType="slide" transparent={true} visible={skillsModalVisible} onRequestClose={() => setSkillsModalVisible(false)}>
         <View style={styles.modalOverlay}>
             <View style={[styles.styledModalContent, {borderColor:'#8257e5'}]}>
                 <View style={styles.styledModalHeader}>
-                    <Text style={[styles.styledModalTitle, {color:'#8257e5'}]}>⚡ ARSENAL</Text>
+                    <Text style={[styles.styledModalTitle, {color:'#8257e5'}]}>⚡ ARSENAL (LV {currentLevel})</Text>
                     <TouchableOpacity onPress={() => setSkillsModalVisible(false)}><Ionicons name="close" size={28} color="#ccc" /></TouchableOpacity>
                 </View>
                 <ScrollView>
                     {myChar?.category === 'equipe' ? (
                         <View>
-                             {/* SEÇÃO HABILIDADES GERAIS (DA EQUIPE TODA) */}
                              <View style={{marginBottom: 20, borderBottomWidth: 1, borderBottomColor:'#333', paddingBottom: 10}}>
-                                <Text style={{color:'#00B37E', fontWeight:'bold', fontSize:14, marginBottom:10}}>
-                                    HABILIDADES GERAIS (COMPARTILHADAS)
-                                </Text>
+                                <Text style={{color:'#00B37E', fontWeight:'bold', fontSize:14, marginBottom:10}}>HABILIDADES GERAIS</Text>
                                 {(() => {
-                                    // Coleta todas as skills gerais de todos os membros
                                     const allGeneralSkills = myChar.team_members?.flatMap(m => m.skills || []).filter(s => s.passive_type === 'general' || s.active_type === 'general') || [];
-                                    
-                                    // Remove duplicatas por nome (caso múltiplos membros tenham a mesma skill geral cadastrada)
                                     const uniqueGeneralSkills = Array.from(new Map(allGeneralSkills.map(s => [s.name, s])).values());
-
                                     if (uniqueGeneralSkills.length === 0) return <Text style={{color:'#555', fontStyle:'italic', fontSize:12}}>Nenhuma habilidade geral.</Text>;
-
                                     return uniqueGeneralSkills.map((s, idx) => (
                                         <TouchableOpacity key={`gen-${idx}`} style={styles.cardItem} onPress={() => activateSkill(s)}>
-                                            <View style={{flex:1}}>
-                                                <Text style={styles.cardName}>{s.name}</Text>
-                                                <Text style={styles.cardDesc}>{s.description} • {s.cost || '-'}</Text>
-                                                <View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSkillSubtypeColor('general')}}>
-                                                    <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>EQUIPE (GERAL)</Text>
-                                                </View>
-                                            </View>
+                                            <View style={{flex:1}}><Text style={styles.cardName}>{s.name}</Text><Text style={styles.cardDesc}>{s.description}</Text></View>
                                             <Ionicons name="play-circle" size={24} color="#00B37E" />
                                         </TouchableOpacity>
                                     ));
                                 })()}
                              </View>
-
-                             {/* SEÇÃO INDIVIDUAL DOS MEMBROS ATIVOS */}
                              {myParticipant.team_state && myParticipant.team_state.length > 0 ? (
                                  myParticipant.team_state.map((activeMember, index) => {
                                      const originalMemberData = myChar.team_members?.find(m => m.name === activeMember.name);
-                                     // Filtra para não repetir as gerais aqui
                                      const memberSkills = (originalMemberData?.skills || []).filter(s => s.passive_type !== 'general' && s.active_type !== 'general');
-                                     
                                      return (
                                          <View key={index} style={{marginBottom: 20}}>
-                                             <Text style={{color:'#FFF', fontWeight:'bold', fontSize:16, marginBottom:10, borderBottomWidth:1, borderBottomColor:'#333', paddingBottom:5}}>
-                                                 {activeMember.name} (HP: {activeMember.current_hp})
-                                             </Text>
-                                             {memberSkills.length === 0 ? (
-                                                 <Text style={{color:'#777', fontStyle:'italic'}}>Sem habilidades individuais.</Text>
-                                             ) : (
+                                             <Text style={{color:'#FFF', fontWeight:'bold', fontSize:16, marginBottom:10, borderBottomWidth:1, borderBottomColor:'#333', paddingBottom:5}}>{activeMember.name} (HP: {activeMember.current_hp})</Text>
+                                             {memberSkills.length === 0 ? (<Text style={{color:'#777', fontStyle:'italic'}}>Sem habilidades.</Text>) : (
                                                  memberSkills.map((s, sIdx) => (
                                                     <TouchableOpacity key={sIdx} style={styles.cardItem} onPress={() => activateSkill(s)}>
-                                                        <View style={{flex:1}}>
-                                                            <Text style={styles.cardName}>{s.name}</Text>
-                                                            <Text style={styles.cardDesc}>{s.description} • {s.cost || '-'}</Text>
-                                                            {(s.type === 'passive' || s.type === 'active') && (
-                                                                <View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSkillSubtypeColor(s.type==='passive'?s.passive_type:s.active_type)}}>
-                                                                    <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{getSkillSubtypeLabel(s.type==='passive'?s.passive_type:s.active_type)}</Text>
-                                                                </View>
-                                                            )}
-                                                        </View>
+                                                        <View style={{flex:1}}><Text style={styles.cardName}>{s.name}</Text><Text style={styles.cardDesc}>{s.description}</Text></View>
                                                         <Ionicons name="play-circle" size={24} color="#00B37E" />
                                                     </TouchableOpacity>
                                                  ))
@@ -777,16 +762,22 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                                          </View>
                                      );
                                  })
-                             ) : (
-                                 <Text style={{color:'#777', textAlign:'center'}}>Nenhuma unidade ativa.</Text>
-                             )}
+                             ) : (<Text style={{color:'#777', textAlign:'center'}}>Nenhuma unidade ativa.</Text>)}
                         </View>
                     ) : (
                         <>
-                            {mySkills.length === 0 && <Text style={{color:'#777', textAlign:'center', marginTop: 20}}>Nenhuma habilidade aprendida.</Text>}
+                            {mySkills.length === 0 && <Text style={{color:'#777', textAlign:'center', marginTop: 20}}>Nenhuma habilidade desbloqueada para o Nível {currentLevel}.</Text>}
                             {mySkills.map((s, idx) => (
                                 <TouchableOpacity key={idx} style={styles.cardItem} onPress={() => activateSkill(s)}>
-                                    <View style={{flex:1}}><Text style={styles.cardName}>{s.name}</Text><Text style={styles.cardDesc}>{s.description} • {s.cost || '-'}</Text></View>
+                                    <View style={{flex:1}}>
+                                        <Text style={styles.cardName}>{(s.unlock_level || 1) > 1 ? `[Lv${s.unlock_level}] ` : ''}{s.name}</Text>
+                                        <Text style={styles.cardDesc}>{s.description} • {s.cost || '-'}</Text>
+                                        {(s.type === 'passive' || s.type === 'active') && (
+                                            <View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSkillSubtypeColor(s.type==='passive'?s.passive_type:s.active_type)}}>
+                                                <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{getSkillSubtypeLabel(s.type==='passive'?s.passive_type:s.active_type)}</Text>
+                                            </View>
+                                        )}
+                                    </View>
                                     <Ionicons name="play-circle" size={24} color="#00B37E" />
                                 </TouchableOpacity>
                             ))}

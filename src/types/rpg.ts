@@ -8,12 +8,13 @@ export interface CharacterSkill {
   type: 'active' | 'passive' | 'transformation';
   
   // SUBTIPOS
-  passive_type?: 'general' | 'individual' | 'transformed'; 
-  active_type?: 'general' | 'individual' | 'transformed'; // <--- NOVO CAMPO
+  passive_type?: 'general' | 'individual' | 'transformed' | 'general_transformed'; 
+  active_type?: 'general' | 'individual' | 'transformed';
 
   cost?: string;
   duration?: number;
   shield_value?: number;
+  unlock_level?: number;
 }
 
 export interface TeamMember {
@@ -35,6 +36,8 @@ export interface GameCharacter {
   unit_count?: number; 
   team_members?: TeamMember[]; 
   base_shield?: number;
+  has_level_system?: boolean; // Novo
+  max_levels?: number;
 }
 
 export interface Victory {
@@ -120,6 +123,7 @@ export interface RoomParticipant {
   team_state?: TeamMemberState[];
   active_member_name?: string;
   challenge_completed?: boolean;
+  current_level?: number;
 }
 
 export interface UserRosterItem {
