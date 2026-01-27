@@ -15,6 +15,8 @@ export interface CharacterSkill {
   duration?: number;
   shield_value?: number;
   unlock_level?: number;
+  is_hit_based?: boolean;
+  hit_value?: number;
 }
 
 export interface TeamMember {
@@ -125,6 +127,7 @@ export interface RoomParticipant {
   active_member_name?: string;
   challenge_completed?: boolean;
   current_level?: number;
+  pre_transformation_hp?: number | null;
 }
 
 export interface UserRosterItem {

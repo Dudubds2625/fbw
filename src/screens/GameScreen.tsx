@@ -17,7 +17,7 @@ interface GameScreenProps {
 
 export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenProps) {
   // ===========================================================================
-  // 1. STATES
+  // 1. STATES & REFS
   // ===========================================================================
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
@@ -47,12 +47,12 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const [gameEvent, setGameEvent] = useState<GameEvent | null>(null);
   
   const currentEventIdRef = useRef<string | null>(null);
-  const hasShownEventRef = useRef(false);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const prevTurnIdRef = useRef<string | null>(null);
   const skillsLoadedRef = useRef(false);
+  const hasShownEventRef = useRef(false);
 
-  // STATUS LOCAIS (Immediate Feedback)
+  // STATUS LOCAIS (Visualização Imediata)
   const [hp, setHp] = useState(10);
   const [maxHp, setMaxHp] = useState(10);
   const [shield, setShield] = useState(0);
@@ -72,12 +72,13 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const currentPhase = room?.turn_phase || 'initial';
   
   const myChar = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
-  
   const activeUnits = (myParticipant?.team_state as TeamMemberState[]) || [];
   const reserveMembers = (myChar?.team_members || []).filter(m => !activeUnits.some(u => u.name === m.name));
   const filteredEffects = catalogEffects.filter(e => e.type === targetEffectType);
   const myBannerActive = (myParticipant?.challenge_completed || (myParticipant && challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`])) && myChar?.challenge_banner_url;
 
+  // Lógica para detectar se está em modo HIT (Seja por categoria ou por transformação ativa)
+  const isHitMode = myChar?.category === 'hit' || (myParticipant?.pre_transformation_hp !== null && myParticipant?.pre_transformation_hp !== undefined);
 
   // ===========================================================================
   // 3. HELPER FUNCTIONS
@@ -115,7 +116,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   };
 
   // ===========================================================================
-  // 4. CORE GAME LOGIC
+  // 4. CORE LOGIC
   // ===========================================================================
 
   const checkTurnChange = async (currentTurnParticipantId: string) => { 
@@ -162,7 +163,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
               const dmgVal = parseInt(d.damage);
               if (!isNaN(dmgVal) && dmgVal > 0) {
                   let finalDmg = dmgVal;
-                  if (myChar?.category === 'hit') finalDmg = 1; 
+                  if (myChar?.category === 'hit' || isHitMode) finalDmg = 1; 
+                  
                   totalDamageTaken += finalDmg;
                   damageSources.push(`${d.name} (${finalDmg})`);
               }
@@ -330,7 +332,12 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const changeHp = async (amount: number) => { 
       if (!myParticipant) return;
       let finalAmount = amount; 
-      if (myChar?.category === 'hit' && amount < 0) finalAmount = -1; 
+      if (isHitMode && amount < 0) {
+          finalAmount = -1;
+      } else if (myChar?.category === 'hit' && amount < 0) {
+          finalAmount = -1;
+      }
+      
       const newVal = Math.max(0, Math.min(maxHp, hp + finalAmount)); 
       setHp(newVal); 
       await supabase.from('room_participants').update({ current_hp: newVal }).eq('id', myParticipant.id);
@@ -411,8 +418,93 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const handlePressPassive = (skill: CharacterSkill) => { showCustomAlert(skill.name, skill.description, 'info', () => handleRemovePassive(skill.id), true, undefined, "REMOVER", "FECHAR"); };
   const removeStatusEffect = async (effectName: string, type: 'buff' | 'debuff') => { if (!myParticipant) return; if (type === 'buff') { const newArr = (myParticipant.active_buffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_buffs: newArr }).eq('id', myParticipant.id); } else { const newArr = (myParticipant.active_debuffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_debuffs: newArr }).eq('id', myParticipant.id); } };
   const handlePressStatusEffect = (effect: ActiveStatusEffect, type: 'buff' | 'debuff') => { let detailText = effect.description ? effect.description : "Sem descrição."; detailText += `\n\nDuração: ${getVisualDuration(effect.duration, type)}`; if(effect.damage) detailText += `\nDano: ${effect.damage}`; showCustomAlert(effect.name, detailText, type === 'buff' ? 'info' : 'damage', () => removeStatusEffect(effect.name, type), true, undefined, "REMOVER", "FECHAR"); };
-  const activateSkill = async (skill: CharacterSkill) => { if (skill.type === 'transformation') { const currentList = myParticipant?.active_transformations || []; if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } let durationToSave = 4; if (skill.duration === -1) { durationToSave = -1; } else if (skill.duration && skill.duration > 0) { durationToSave = skill.duration + 1; } const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`; showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); } else { const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); } setSkillsModalVisible(false); };
-  const removeTransformation = async (transName: string) => { if(!myParticipant) return; const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName); await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id); showCustomAlert("Info", "Destransformado com sucesso!", 'info'); };
+  
+  // --- ATIVAR SKILL (CORRIGIDO) ---
+  const activateSkill = async (skill: CharacterSkill) => { 
+    if (skill.type === 'transformation') { 
+        const currentList = myParticipant?.active_transformations || []; 
+        if (currentList.some(t => t.name === skill.name)) { showCustomAlert("Ops", `${skill.name} já está ativa.`); return; } 
+        
+        let durationToSave = 4; 
+        if (skill.duration === -1) { durationToSave = -1; } 
+        else if (skill.duration && skill.duration > 0) { durationToSave = skill.duration + 1; } 
+        
+        const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; 
+        
+        // LÓGICA DE HIT
+        const hitVal = Number(skill.hit_value);
+        if (skill.is_hit_based && !isNaN(hitVal) && hitVal > 0) {
+            // ATUALIZAÇÃO LOCAL OTIMISTA (CRÍTICO)
+            const savedHp = myParticipant?.pre_transformation_hp ?? myParticipant?.current_hp;
+            setHp(hitVal);
+            setMaxHp(hitVal);
+            
+            // Atualiza o objeto myParticipant local para evitar flicker no fetchGameData
+            if (myParticipant) {
+                setMyParticipant({
+                    ...myParticipant,
+                    active_transformations: newList,
+                    current_hp: hitVal,
+                    max_hp: hitVal,
+                    pre_transformation_hp: savedHp
+                });
+            }
+
+            await supabase.from('room_participants').update({ 
+                active_transformations: newList,
+                current_hp: hitVal,
+                max_hp: hitVal,
+                pre_transformation_hp: savedHp
+            }).eq('id', myParticipant?.id);
+        } else {
+            await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); 
+        }
+
+        const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`;
+        showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); 
+    } else { 
+        const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); 
+    } 
+    setSkillsModalVisible(false); 
+  };
+
+  // --- REMOVER TRANSFORMAÇÃO (CORRIGIDO) ---
+  const removeTransformation = async (transName: string) => { 
+      if(!myParticipant) return; 
+      
+      const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName); 
+      const skillRef = allRawSkills.find(s => s.name === transName);
+
+      if (skillRef?.is_hit_based && myParticipant.pre_transformation_hp !== null && myParticipant.pre_transformation_hp !== undefined) {
+           const originalMaxHp = myChar?.base_hp || 10; 
+           const oldHp = myParticipant.pre_transformation_hp;
+           
+           // ATUALIZAÇÃO LOCAL OTIMISTA
+           setHp(oldHp);
+           setMaxHp(originalMaxHp);
+           
+           // Atualiza objeto local
+           setMyParticipant({
+               ...myParticipant,
+               active_transformations: newList,
+               current_hp: oldHp,
+               max_hp: originalMaxHp,
+               pre_transformation_hp: null
+           });
+
+           await supabase.from('room_participants').update({ 
+               active_transformations: newList,
+               current_hp: oldHp,
+               max_hp: originalMaxHp,
+               pre_transformation_hp: null 
+           }).eq('id', myParticipant.id);
+      } else {
+           await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id); 
+      }
+      
+      showCustomAlert("Info", "Destransformado com sucesso!", 'info'); 
+  };
+
   const openEffectList = (type: 'buff' | 'debuff') => { setTargetEffectType(type); setEffectsListModalVisible(true); };
   const applyStatusEffect = async (effect: StatusEffect) => { if (!myParticipant) return; const baseDuration = (effect.duration && effect.duration > 0) ? effect.duration : 0; const finalDuration = targetEffectType === 'buff' ? (baseDuration > 0 ? baseDuration + 1 : 0) : baseDuration; const newEffect: ActiveStatusEffect = { name: effect.title, description: effect.description, damage: effect.damage, duration: finalDuration }; if (targetEffectType === 'buff') { const currentBuffs = myParticipant.active_buffs || []; if (currentBuffs.some(b => b.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse buff."); return; } await supabase.from('room_participants').update({ active_buffs: [...currentBuffs, newEffect] }).eq('id', myParticipant.id); } else { const currentDebuffs = myParticipant.active_debuffs || []; if (currentDebuffs.some(d => d.name === newEffect.name)) { showCustomAlert("Repetido", "Já possui esse debuff."); return; } await supabase.from('room_participants').update({ active_debuffs: [...currentDebuffs, newEffect] }).eq('id', myParticipant.id); } setEffectsListModalVisible(false); };
 
@@ -477,6 +569,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
             const me = parts.find(p => p.user_id === userId);
             if (me) {
+                // SÓ ATUALIZA SE NÃO FOR UMA ATUALIZAÇÃO OTIMISTA RECENTE
                 setMyParticipant(me);
                 if (me.max_hp !== maxHp) setMaxHp(me.max_hp);
                 if (me.current_hp !== hp && !processingPhase) setHp(me.current_hp);
@@ -504,8 +597,11 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 chars?.forEach(c => map[c.id] = c);
                 setCharactersMap(map);
                 if (me && me.selected_character_id && map[me.selected_character_id]) {
-                    const charBaseShield = map[me.selected_character_id].base_shield || 0;
-                    if (charBaseShield !== maxShield) setMaxShield(charBaseShield);
+                    // Evita resetar shield se a transformação estiver ativa
+                    if (!isHitMode) {
+                        const charBaseShield = map[me.selected_character_id].base_shield || 0;
+                        if (charBaseShield !== maxShield) setMaxShield(charBaseShield);
+                    }
                 }
             }
         }
@@ -633,7 +729,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         ) : (
             <>
                 {maxShield > 0 && (<View style={[styles.statsCard, {borderColor: '#29B6F6', borderWidth: 1}]}><View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}><Text style={[styles.label, {color:'#29B6F6'}]}>ESCUDO</Text><Text style={{color:'#29B6F6', fontWeight:'bold'}}>Max: {maxShield}</Text></View><View style={styles.hpControls}><TouchableOpacity onPress={() => changeShield(-10)} style={styles.smallCtrlBtn}><Text style={styles.smallCtrlText}>-10</Text></TouchableOpacity><TouchableOpacity onPress={() => changeShield(-1)} style={[styles.hpBtn, {backgroundColor: '#333', borderWidth:1, borderColor:'#29B6F6'}]}><Ionicons name="remove" size={32} color="#29B6F6" /></TouchableOpacity><View style={styles.hpDisplay}><Text style={[styles.hpValue, {color:'#29B6F6'}]}>{shield}</Text></View><TouchableOpacity onPress={() => changeShield(1)} style={[styles.hpBtn, {backgroundColor: '#333', borderWidth:1, borderColor:'#29B6F6'}]}><Ionicons name="add" size={32} color="#29B6F6" /></TouchableOpacity><TouchableOpacity onPress={() => changeShield(10)} style={styles.smallCtrlBtn}><Text style={styles.smallCtrlText}>+10</Text></TouchableOpacity></View></View>)}
-                <View style={styles.statsCard}><View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}><Text style={styles.label}>{myChar?.category === 'hit' ? "HITS (VIDA FIXA)" : "HP"}</Text><View style={{flexDirection:'row', alignItems:'center'}}><Text style={[styles.label, {color:'#777', marginRight:5}]}>Max:</Text><TouchableOpacity onPress={() => changeMaxHp(-1)}><Ionicons name="remove-circle" color="#555" size={24}/></TouchableOpacity><Text style={{color:'#fff', fontWeight:'bold', marginHorizontal:5, fontSize:16}}>{maxHp}</Text><TouchableOpacity onPress={() => changeMaxHp(1)}><Ionicons name="add-circle" color="#555" size={24}/></TouchableOpacity></View></View><View style={styles.hpControls}><TouchableOpacity onPress={() => changeHp(-10)} style={[styles.smallCtrlBtn, {backgroundColor:'#330000'}]}><Text style={[styles.smallCtrlText, {color:'#ff4444'}]}>-10</Text></TouchableOpacity><TouchableOpacity onPress={() => changeHp(-1)} style={[styles.hpBtn, {backgroundColor: '#ff4444'}]}><Ionicons name="remove" size={32} color="#fff" /></TouchableOpacity><View style={styles.hpDisplay}><Text style={styles.hpValue}>{hp}</Text></View><TouchableOpacity onPress={() => changeHp(1)} style={[styles.hpBtn, {backgroundColor: '#00B37E'}]}><Ionicons name="add" size={32} color="#fff" /></TouchableOpacity><TouchableOpacity onPress={() => changeHp(10)} style={[styles.smallCtrlBtn, {backgroundColor:'#003300'}]}><Text style={[styles.smallCtrlText, {color:'#00B37E'}]}>+10</Text></TouchableOpacity></View></View>
+                <View style={styles.statsCard}><View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}><Text style={styles.label}>{isHitMode ? "HITS (TRANSF.)" : (myChar?.category === 'hit' ? "HITS (VIDA FIXA)" : "HP")}</Text><View style={{flexDirection:'row', alignItems:'center'}}><Text style={[styles.label, {color:'#777', marginRight:5}]}>Max:</Text><TouchableOpacity onPress={() => changeMaxHp(-1)}><Ionicons name="remove-circle" color="#555" size={24}/></TouchableOpacity><Text style={{color:'#fff', fontWeight:'bold', marginHorizontal:5, fontSize:16}}>{maxHp}</Text><TouchableOpacity onPress={() => changeMaxHp(1)}><Ionicons name="add-circle" color="#555" size={24}/></TouchableOpacity></View></View><View style={styles.hpControls}><TouchableOpacity onPress={() => changeHp(-10)} style={[styles.smallCtrlBtn, {backgroundColor:'#330000'}]}><Text style={[styles.smallCtrlText, {color:'#ff4444'}]}>-10</Text></TouchableOpacity><TouchableOpacity onPress={() => changeHp(-1)} style={[styles.hpBtn, {backgroundColor: '#ff4444'}]}><Ionicons name="remove" size={32} color="#fff" /></TouchableOpacity><View style={styles.hpDisplay}><Text style={styles.hpValue}>{hp}</Text></View><TouchableOpacity onPress={() => changeHp(1)} style={[styles.hpBtn, {backgroundColor: '#00B37E'}]}><Ionicons name="add" size={32} color="#fff" /></TouchableOpacity><TouchableOpacity onPress={() => changeHp(10)} style={[styles.smallCtrlBtn, {backgroundColor:'#003300'}]}><Text style={[styles.smallCtrlText, {color:'#00B37E'}]}>+10</Text></TouchableOpacity></View></View>
             </>
         )}
 
