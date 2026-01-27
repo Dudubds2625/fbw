@@ -51,6 +51,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const prevTurnIdRef = useRef<string | null>(null);
   const skillsLoadedRef = useRef(false);
   const hasShownEventRef = useRef(false);
+  
+  const blockUpdateRef = useRef(false);
 
   // STATUS LOCAIS (Visualização Imediata)
   const [hp, setHp] = useState(10);
@@ -77,7 +79,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const filteredEffects = catalogEffects.filter(e => e.type === targetEffectType);
   const myBannerActive = (myParticipant?.challenge_completed || (myParticipant && challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`])) && myChar?.challenge_banner_url;
 
-  // Lógica para detectar se está em modo HIT (Seja por categoria ou por transformação ativa)
+  // Lógica de Detecção de HIT
+  // Se myChar é HIT nativo OU se a flag pre_transformation_hp NÃO É NULA, então é HIT Mode.
   const isHitMode = myChar?.category === 'hit' || (myParticipant?.pre_transformation_hp !== null && myParticipant?.pre_transformation_hp !== undefined);
 
   // ===========================================================================
@@ -130,17 +133,32 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const processEndTurnLogic = async () => {
       if (!myParticipant) return;
       
+      // Captura estado ANTES de atualizar
+      const wasHitMode = (myChar?.category === 'hit') || (myParticipant.pre_transformation_hp !== null && myParticipant.pre_transformation_hp !== undefined);
+
+      // 1. Processar Transformações e verificar expiração
       let updatedTrans = [...(myParticipant.active_transformations || [])];
       let transExpired: string[] = [];
+      let hitTransformationEnded = false;
+
       updatedTrans = updatedTrans.map(t => { 
           if (t.rounds_left === -1) return t; 
           return { ...t, rounds_left: t.rounds_left - 1 }; 
       }).filter(t => { 
           if (t.rounds_left === -1) return true; 
-          if (t.rounds_left <= 0) { transExpired.push(t.name); return false; } 
+          if (t.rounds_left <= 0) { 
+              transExpired.push(t.name);
+              // Verifica se a transformação que acabou era de HIT
+              const skill = allRawSkills.find(s => s.name === t.name);
+              if (skill?.is_hit_based) {
+                  hitTransformationEnded = true;
+              }
+              return false; 
+          } 
           return true; 
       });
 
+      // 2. Processar Buffs
       let updatedBuffs = [...(myParticipant.active_buffs || [])];
       let buffsExpired: string[] = [];
       updatedBuffs = updatedBuffs.map(b => { 
@@ -153,6 +171,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
           return true; 
       });
 
+      // 3. Processar Debuffs (Cálculo do Dano)
       let updatedDebuffs = [...(myParticipant.active_debuffs || [])];
       let debuffsExpired: string[] = [];
       let totalDamageTaken = 0;
@@ -160,13 +179,17 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       
       updatedDebuffs = updatedDebuffs.map(d => {
           if (d.damage) {
-              const dmgVal = parseInt(d.damage);
+              const dmgVal = parseInt(d.damage.toString()); 
               if (!isNaN(dmgVal) && dmgVal > 0) {
                   let finalDmg = dmgVal;
-                  if (myChar?.category === 'hit' || isHitMode) finalDmg = 1; 
+                  
+                  // Se estava em HIT mode neste turno, o dano é 1
+                  if (wasHitMode) {
+                      finalDmg = 1; 
+                  }
                   
                   totalDamageTaken += finalDmg;
-                  damageSources.push(`${d.name} (${finalDmg})`);
+                  damageSources.push(`${d.name} (-${finalDmg})`);
               }
           }
           return { ...d, duration: d.duration - 1 };
@@ -174,17 +197,85 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
       let currentShield = shield;
       let currentHp = hp;
-      
-      if (totalDamageTaken > 0) { 
-          if (currentShield >= totalDamageTaken) { currentShield -= totalDamageTaken; } 
-          else { const remainingDmg = totalDamageTaken - currentShield; currentShield = 0; currentHp = Math.max(0, currentHp - remainingDmg); } 
+      let finalTeamState = [...activeUnits];
+
+      // 4. APLICAR DANO
+      if (totalDamageTaken > 0) {
+          let damageAfterShield = totalDamageTaken;
+          if (currentShield >= damageAfterShield) {
+              currentShield -= damageAfterShield;
+              damageAfterShield = 0;
+          } else {
+              damageAfterShield -= currentShield;
+              currentShield = 0;
+          }
+
+          if (myChar?.category === 'equipe' && damageAfterShield > 0) {
+              finalTeamState = finalTeamState.map(unit => {
+                  if (damageAfterShield > 0 && unit.current_hp > 0) {
+                      const dmgToUnit = Math.min(unit.current_hp, damageAfterShield);
+                      unit.current_hp -= dmgToUnit;
+                      damageAfterShield -= dmgToUnit;
+                  }
+                  return unit;
+              }).filter(u => u.current_hp > 0); 
+
+              currentHp = finalTeamState.reduce((acc, u) => acc + u.current_hp, 0);
+          } else if (damageAfterShield > 0) {
+              currentHp = Math.max(0, currentHp - damageAfterShield);
+          }
       }
       
-      setShield(currentShield); setHp(currentHp);
-      await supabase.from('room_participants').update({ active_transformations: updatedTrans, active_buffs: updatedBuffs, active_debuffs: updatedDebuffs, current_hp: currentHp, current_shield: currentShield }).eq('id', myParticipant.id);
+      // 5. ATUALIZAR ESTADO (E RESTAURAR SE EXPIROU)
+      blockUpdateRef.current = true;
+
+      const payload: any = { 
+          active_transformations: updatedTrans, 
+          active_buffs: updatedBuffs, 
+          active_debuffs: updatedDebuffs, 
+          current_hp: currentHp, 
+          current_shield: currentShield 
+      };
+
+      if (myChar?.category === 'equipe') {
+          payload.team_state = finalTeamState;
+      }
+
+      // SE HIT ACABOU, RESTAURA!
+      if (hitTransformationEnded && myParticipant.pre_transformation_hp) {
+          const originalHp = myParticipant.pre_transformation_hp;
+          const originalMaxHp = myChar?.base_hp || 10;
+
+          // Limpa a flag no payload para o banco
+          payload.pre_transformation_hp = null;
+          payload.current_hp = originalHp;
+          payload.max_hp = originalMaxHp;
+
+          // Atualiza visual local
+          setHp(originalHp);
+          setMaxHp(originalMaxHp);
+          setShield(currentShield); // Mantém escudo
+
+          // CRUCIAL: Atualiza estado local myParticipant para limpar a flag IMEDIATAMENTE
+          setMyParticipant(prev => prev ? ({
+              ...prev,
+              pre_transformation_hp: null, // Limpa flag localmente
+              current_hp: originalHp,
+              max_hp: originalMaxHp,
+              active_transformations: updatedTrans
+          }) : null);
+
+      } else {
+          setShield(currentShield); 
+          setHp(currentHp);
+      }
+
+      await supabase.from('room_participants').update(payload).eq('id', myParticipant.id);
       
+      setTimeout(() => { blockUpdateRef.current = false; }, 1500);
+
       let msgParts = [];
-      if (totalDamageTaken > 0) msgParts.push(`💥 Sofreu ${totalDamageTaken} de dano (${damageSources.join(', ')}).`);
+      if (totalDamageTaken > 0) msgParts.push(`💥 Dano de Debuffs: ${totalDamageTaken} (${damageSources.join(', ')}).`);
       if (transExpired.length > 0) msgParts.push(`❌ Transformações encerradas: ${transExpired.join(', ')}.`);
       if (buffsExpired.length > 0) msgParts.push(`📉 Buffs expirados: ${buffsExpired.join(', ')}.`);
       if (debuffsExpired.length > 0) msgParts.push(`✨ Debuffs removidos: ${debuffsExpired.join(', ')}.`);
@@ -329,18 +420,26 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       }
   };
 
+  // --- ALTERAR VIDA GLOBAL (MANUAL) ---
   const changeHp = async (amount: number) => { 
       if (!myParticipant) return;
-      let finalAmount = amount; 
-      if (isHitMode && amount < 0) {
-          finalAmount = -1;
-      } else if (myChar?.category === 'hit' && amount < 0) {
-          finalAmount = -1;
-      }
+      let finalAmount = amount;
       
+      // VERIFICAÇÃO LOCAL DE HIT MODE (Mais segura)
+      const currentIsHit = myChar?.category === 'hit' || (myParticipant.pre_transformation_hp !== null && myParticipant.pre_transformation_hp !== undefined);
+
+      if (currentIsHit && amount < 0) { finalAmount = -1; }
+
       const newVal = Math.max(0, Math.min(maxHp, hp + finalAmount)); 
+      
       setHp(newVal); 
+      blockUpdateRef.current = true;
+      
+      // Atualiza localmente para consistência
+      setMyParticipant(prev => prev ? ({...prev, current_hp: newVal}) : null);
+
       await supabase.from('room_participants').update({ current_hp: newVal }).eq('id', myParticipant.id);
+      setTimeout(() => { blockUpdateRef.current = false; }, 1000);
   };
 
   const changeMaxHp = async (amount: number) => { 
@@ -349,7 +448,10 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       setMaxHp(newVal); 
       const fixedHp = Math.min(hp, newVal); 
       if (fixedHp !== hp) setHp(fixedHp); 
+      
+      blockUpdateRef.current = true;
       await supabase.from('room_participants').update({ max_hp: newVal, current_hp: fixedHp }).eq('id', myParticipant.id);
+      setTimeout(() => { blockUpdateRef.current = false; }, 1000);
   };
 
   const changeShield = async (amount: number) => { 
@@ -359,6 +461,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       await supabase.from('room_participants').update({ current_shield: newVal }).eq('id', myParticipant.id); 
   };
 
+  // --- FUNÇÕES DE EQUIPE (UNIDADES INDIVIDUAIS) ---
   const handleLevelChange = async (delta: number) => {
       const newLevel = Math.max(1, currentLevel + delta);
       if (newLevel === currentLevel) return;
@@ -382,35 +485,79 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       if (!myParticipant || !myParticipant.team_state) return;
       const newState = [...activeUnits];
       const unit = { ...newState[index] }; 
-      unit.current_hp = Math.max(0, Math.min(unit.max_hp, unit.current_hp + amount));
-      if (unit.current_hp <= 0) { newState.splice(index, 1); } else { newState[index] = unit; }
       
-      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
-      const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0); 
-      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
+      let finalAmount = amount;
+      // VERIFICAÇÃO LOCAL DE HIT
+      const currentIsHit = myChar?.category === 'hit' || (myParticipant.pre_transformation_hp !== null && myParticipant.pre_transformation_hp !== undefined);
+      
+      if (currentIsHit && amount < 0) {
+          finalAmount = -1;
+      }
+
+      const newUnitVal = Math.max(0, Math.min(unit.max_hp, unit.current_hp + finalAmount));
+      
+      if (newUnitVal <= 0) { 
+          newState.splice(index, 1); 
+      } else { 
+          unit.current_hp = newUnitVal;
+          newState[index] = unit; 
+      }
+      
+      const newGlobalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
+      setHp(newGlobalHp); 
+      
+      await supabase.from('room_participants').update({ 
+          team_state: newState, 
+          current_hp: newGlobalHp
+      }).eq('id', myParticipant.id);
   };
 
   const changeUnitMaxHp = async (index: number, amount: number) => {
       if (!myParticipant || !myParticipant.team_state) return;
       const newState = [...activeUnits];
       const unit = { ...newState[index] }; 
+      
       const newMax = Math.max(1, unit.max_hp + amount);
       unit.max_hp = newMax;
-      if (unit.current_hp > newMax) { unit.current_hp = newMax; }
+      
+      if (unit.current_hp > newMax) { 
+          unit.current_hp = newMax;
+      }
+
       newState[index] = unit;
-      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
+      
       const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0); 
-      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
+      const newGlobalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
+
+      setHp(newGlobalHp);
+      setMaxHp(totalMaxHp);
+      
+      await supabase.from('room_participants').update({ 
+          team_state: newState, 
+          current_hp: newGlobalHp, 
+          max_hp: totalMaxHp 
+      }).eq('id', myParticipant.id);
   };
 
   const handleAddMemberToField = async (member: TeamMember) => {
       if (!myParticipant) return;
       const currentState = [...activeUnits];
       const newUnit: TeamMemberState = { name: member.name, current_hp: member.base_hp, max_hp: member.base_hp, current_level: 1 };
+      
       const newState = [...currentState, newUnit];
-      const totalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
+      
+      const newGlobalHp = newState.reduce((acc, u) => acc + u.current_hp, 0);
       const totalMaxHp = newState.reduce((acc, u) => acc + u.max_hp, 0);
-      await supabase.from('room_participants').update({ team_state: newState, current_hp: totalHp, max_hp: totalMaxHp }).eq('id', myParticipant.id);
+      
+      setHp(newGlobalHp);
+      setMaxHp(totalMaxHp);
+      
+      await supabase.from('room_participants').update({ 
+          team_state: newState, 
+          current_hp: newGlobalHp, 
+          max_hp: totalMaxHp 
+      }).eq('id', myParticipant.id);
+      
       setDeployMemberModalVisible(false);
   };
 
@@ -419,7 +566,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const removeStatusEffect = async (effectName: string, type: 'buff' | 'debuff') => { if (!myParticipant) return; if (type === 'buff') { const newArr = (myParticipant.active_buffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_buffs: newArr }).eq('id', myParticipant.id); } else { const newArr = (myParticipant.active_debuffs || []).filter(e => e.name !== effectName); await supabase.from('room_participants').update({ active_debuffs: newArr }).eq('id', myParticipant.id); } };
   const handlePressStatusEffect = (effect: ActiveStatusEffect, type: 'buff' | 'debuff') => { let detailText = effect.description ? effect.description : "Sem descrição."; detailText += `\n\nDuração: ${getVisualDuration(effect.duration, type)}`; if(effect.damage) detailText += `\nDano: ${effect.damage}`; showCustomAlert(effect.name, detailText, type === 'buff' ? 'info' : 'damage', () => removeStatusEffect(effect.name, type), true, undefined, "REMOVER", "FECHAR"); };
   
-  // --- ATIVAR SKILL (CORRIGIDO) ---
+  // --- ATIVAR SKILL ---
   const activateSkill = async (skill: CharacterSkill) => { 
     if (skill.type === 'transformation') { 
         const currentList = myParticipant?.active_transformations || []; 
@@ -431,78 +578,102 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         
         const newList = [...currentList, { name: skill.name, rounds_left: durationToSave }]; 
         
-        // LÓGICA DE HIT
         const hitVal = Number(skill.hit_value);
-        if (skill.is_hit_based && !isNaN(hitVal) && hitVal > 0) {
-            // ATUALIZAÇÃO LOCAL OTIMISTA (CRÍTICO)
-            const savedHp = myParticipant?.pre_transformation_hp ?? myParticipant?.current_hp;
-            setHp(hitVal);
-            setMaxHp(hitVal);
+        const isHit = skill.is_hit_based && !isNaN(hitVal) && hitVal > 0;
+
+        const updatePayload: any = { active_transformations: newList };
+        
+        if (isHit) {
+            updatePayload.pre_transformation_hp = myParticipant?.current_hp || 1;
             
-            // Atualiza o objeto myParticipant local para evitar flicker no fetchGameData
+            // ATUALIZAÇÃO OTIMISTA IMEDIATA
             if (myParticipant) {
                 setMyParticipant({
                     ...myParticipant,
                     active_transformations: newList,
-                    current_hp: hitVal,
-                    max_hp: hitVal,
-                    pre_transformation_hp: savedHp
+                    pre_transformation_hp: myParticipant.current_hp || 1
                 });
             }
-
-            await supabase.from('room_participants').update({ 
-                active_transformations: newList,
-                current_hp: hitVal,
-                max_hp: hitVal,
-                pre_transformation_hp: savedHp
-            }).eq('id', myParticipant?.id);
         } else {
-            await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant?.id); 
+            if (myParticipant) {
+                setMyParticipant({
+                    ...myParticipant,
+                    active_transformations: newList
+                });
+            }
         }
 
+        await supabase.from('room_participants').update(updatePayload).eq('id', myParticipant?.id);
+        
         const durText = durationToSave === -1 ? 'Infinito' : `${durationToSave-1}`;
-        showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); 
+        if (isHit) {
+            showCustomAlert("Transformação HIT!", `${skill.name} ativada. \n\nO sistema ajustará automaticamente qualquer dano para 1 HIT.\n\nPor favor, ajuste sua vida inicial para ${hitVal}.`, 'info');
+        } else {
+            showCustomAlert("Transformação!", `${skill.name} ativada por ${durText} rodadas.`, 'info'); 
+        }
+
     } else { 
         const newBuffs = buffs ? `${buffs}, ${skill.name}` : skill.name; setBuffs(newBuffs); await supabase.from('room_participants').update({ buffs: newBuffs }).eq('id', myParticipant?.id); showCustomAlert("Habilidade", `${skill.name} usada!`, 'info'); 
     } 
     setSkillsModalVisible(false); 
   };
 
-  // --- REMOVER TRANSFORMAÇÃO (CORRIGIDO) ---
+  // --- REMOVER TRANSFORMAÇÃO (ATUALIZAÇÃO OTIMISTA CRÍTICA) ---
   const removeTransformation = async (transName: string) => { 
       if(!myParticipant) return; 
       
       const newList = (myParticipant.active_transformations || []).filter(t => t.name !== transName); 
-      const skillRef = allRawSkills.find(s => s.name === transName);
-
-      if (skillRef?.is_hit_based && myParticipant.pre_transformation_hp !== null && myParticipant.pre_transformation_hp !== undefined) {
-           const originalMaxHp = myChar?.base_hp || 10; 
-           const oldHp = myParticipant.pre_transformation_hp;
-           
-           // ATUALIZAÇÃO LOCAL OTIMISTA
-           setHp(oldHp);
-           setMaxHp(originalMaxHp);
-           
-           // Atualiza objeto local
-           setMyParticipant({
-               ...myParticipant,
-               active_transformations: newList,
-               current_hp: oldHp,
-               max_hp: originalMaxHp,
-               pre_transformation_hp: null
-           });
-
-           await supabase.from('room_participants').update({ 
-               active_transformations: newList,
-               current_hp: oldHp,
-               max_hp: originalMaxHp,
-               pre_transformation_hp: null 
-           }).eq('id', myParticipant.id);
-      } else {
-           await supabase.from('room_participants').update({ active_transformations: newList }).eq('id', myParticipant.id); 
-      }
       
-      showCustomAlert("Info", "Destransformado com sucesso!", 'info'); 
+      const skill = allRawSkills.find(s => s.name === transName);
+      
+      // Se era HIT ou se acabou o HIT mode
+      const wasHit = skill?.is_hit_based || (myParticipant.pre_transformation_hp !== null);
+      // Checa se ainda tem alguma HIT transformation na nova lista
+      const stillHit = newList.some(t => {
+          const s = allRawSkills.find(sk => sk.name === t.name);
+          return !!s?.is_hit_based;
+      });
+
+      const updatePayload: any = { active_transformations: newList };
+      let didRevert = false;
+
+      // SE ERA HIT E NÃO É MAIS HIT (OU REMOVEMOS A SKILL HIT) -> DESTRANSFORMA DE VEZ
+      if (wasHit && !stillHit) {
+          const originalHp = myParticipant.pre_transformation_hp || 10;
+          const originalMaxHp = myChar?.base_hp || 10;
+
+          // 1. ATUALIZAÇÃO OTIMISTA DO ESTADO (FUNDAMENTAL PARA O DANO VOLTAR AO NORMAL)
+          setMyParticipant(prev => prev ? ({
+              ...prev,
+              active_transformations: newList,
+              pre_transformation_hp: null, // ISSO AQUI DESLIGA O HIT MODE LOCALMENTE
+              current_hp: originalHp,
+              max_hp: originalMaxHp
+          }) : null);
+
+          // 2. Atualiza UI Visual
+          setHp(originalHp);
+          setMaxHp(originalMaxHp);
+          blockUpdateRef.current = true;
+
+          // 3. Prepara Payload
+          updatePayload.pre_transformation_hp = null;
+          updatePayload.current_hp = originalHp;
+          updatePayload.max_hp = originalMaxHp;
+
+          didRevert = true;
+          setTimeout(() => { blockUpdateRef.current = false; }, 1000);
+      } else {
+          setMyParticipant(prev => prev ? ({ ...prev, active_transformations: newList }) : null);
+      }
+
+      await supabase.from('room_participants').update(updatePayload).eq('id', myParticipant.id);
+      
+      if (didRevert) {
+          showCustomAlert("Destransformar", `Transformação ${transName} removida. Voltando à forma normal.`, 'info'); 
+      } else {
+          showCustomAlert("Info", `Transformação ${transName} removida.`, 'info'); 
+      }
   };
 
   const openEffectList = (type: 'buff' | 'debuff') => { setTargetEffectType(type); setEffectsListModalVisible(true); };
@@ -569,13 +740,18 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
             const me = parts.find(p => p.user_id === userId);
             if (me) {
-                // SÓ ATUALIZA SE NÃO FOR UMA ATUALIZAÇÃO OTIMISTA RECENTE
-                setMyParticipant(me);
-                if (me.max_hp !== maxHp) setMaxHp(me.max_hp);
-                if (me.current_hp !== hp && !processingPhase) setHp(me.current_hp);
-                if (me.current_shield !== undefined && me.current_shield !== shield) setShield(me.current_shield);
-                if (me.buffs !== buffs) setBuffs(me.buffs || '');
-                if (me.debuffs !== debuffs) setDebuffs(me.debuffs || '');
+                if (blockUpdateRef.current) {
+                    setMyParticipant(me);
+                    if (me.buffs !== buffs) setBuffs(me.buffs || '');
+                    if (me.debuffs !== debuffs) setDebuffs(me.debuffs || '');
+                } else {
+                    setMyParticipant(me);
+                    if (me.max_hp !== maxHp) setMaxHp(me.max_hp);
+                    if (me.current_hp !== hp && !processingPhase) setHp(me.current_hp);
+                    if (me.current_shield !== undefined && me.current_shield !== shield) setShield(me.current_shield);
+                    if (me.buffs !== buffs) setBuffs(me.buffs || '');
+                    if (me.debuffs !== debuffs) setDebuffs(me.debuffs || '');
+                }
 
                 const roomLvl = me.current_level || 1;
                 if (roomLvl !== currentLevel) setCurrentLevel(roomLvl);
@@ -597,11 +773,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                 chars?.forEach(c => map[c.id] = c);
                 setCharactersMap(map);
                 if (me && me.selected_character_id && map[me.selected_character_id]) {
-                    // Evita resetar shield se a transformação estiver ativa
-                    if (!isHitMode) {
-                        const charBaseShield = map[me.selected_character_id].base_shield || 0;
-                        if (charBaseShield !== maxShield) setMaxShield(charBaseShield);
-                    }
+                    const charBaseShield = map[me.selected_character_id].base_shield || 0;
+                    if (charBaseShield !== maxShield) setMaxShield(charBaseShield);
                 }
             }
         }
@@ -724,7 +897,12 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                         </View>
                     ))
                 )}
-                <Text style={{color:'#777', fontSize:10, textAlign:'center', marginTop:10}}>HP TOTAL DO EXÉRCITO: {hp}</Text>
+                
+                {/* VISUALIZAÇÃO TOTAL DO EXÉRCITO SEM CONTROLES */}
+                <View style={{marginTop: 15, padding: 10, backgroundColor: '#18181B', borderRadius: 8, borderWidth:1, borderColor:'#333', alignItems:'center'}}>
+                     <Text style={{color:'#777', fontSize:10, textAlign:'center', marginBottom:5}}>HP TOTAL DO EXÉRCITO:</Text>
+                     <Text style={{color:'#fff', fontSize:24, fontWeight:'bold'}}>{hp}</Text>
+                </View>
             </View>
         ) : (
             <>
