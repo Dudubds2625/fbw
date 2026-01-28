@@ -16,6 +16,14 @@ interface HomeScreenProps {
   onStartGame: (roomCode: string) => void;
 }
 
+// Interface estendida para suportar a lógica de Parceiros na UI
+interface PartnerMember extends TeamMember {
+  has_life: boolean;
+  life_type: 'numeric' | 'hit';
+  has_level_system?: boolean;
+  max_levels?: number;
+}
+
 const generateRoomCode = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   let result = '';
@@ -29,7 +37,6 @@ interface GameCharacterWithCreator extends GameCharacter {
 }
 
 export default function HomeScreen({ onStartGame }: HomeScreenProps) {
-  // ... (STATES, EFFECT, FUNCTIONS - MANTIDOS IGUAIS) ...
   // --- DADOS GERAIS ---
   const [playedCharacters, setPlayedCharacters] = useState<UserRosterItem[]>([]);
   const [catalogChars, setCatalogChars] = useState<GameCharacterWithCreator[]>([]);
@@ -37,6 +44,8 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
   const [victories, setVictories] = useState<Victory[]>([]);
   const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
+  
+  // --- UI STATES ---
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
   const [selectedCharStats, setSelectedCharStats] = useState({ matches: 0, wins: 0, winRate: 0, missions: 0 });
   const [loadingStats, setLoadingStats] = useState(false);
@@ -50,6 +59,8 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
   const [joinCode, setJoinCode] = useState(''); 
   const roomChannelRef = useRef<RealtimeChannel | null>(null);
+  
+  // --- MODAIS ---
   const [createCharModalVisible, setCreateCharModalVisible] = useState(false);
   const [manageEventsModalVisible, setManageEventsModalVisible] = useState(false);
   const [createEventModalVisible, setCreateEventModalVisible] = useState(false);
@@ -58,7 +69,8 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
   const [selectedCharacter, setSelectedCharacter] = useState<UserRosterItem | null>(null);
   const [memberSkillsModalVisible, setMemberSkillsModalVisible] = useState(false);
-  const [currentMemberIndex, setCurrentMemberIndex] = useState<number | null>(null);
+  
+  // --- CRIAÇÃO DE CHAR ---
   const [editingCharId, setEditingCharId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newOrigin, setNewOrigin] = useState('');
@@ -69,14 +81,39 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [shieldInput, setShieldInput] = useState('0');
   const [hasLevelSystem, setHasLevelSystem] = useState(false);
   const [maxLevelsInput, setMaxLevelsInput] = useState('');
-  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [memberName, setMemberName] = useState('');
-  const [memberHp, setMemberHp] = useState('');
   const [newImage, setNewImage] = useState(''); 
   const [pickedImageUri, setPickedImageUri] = useState(''); 
   const [newBanner, setNewBanner] = useState('');
   const [pickedBannerUri, setPickedBannerUri] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // --- EQUIPE & MEMBROS ---
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [currentMemberIndex, setCurrentMemberIndex] = useState<number | null>(null);
+  const [memberName, setMemberName] = useState('');
+  const [memberHp, setMemberHp] = useState('');
+
+  // --- PARCEIROS ---
+  const [hasPartners, setHasPartners] = useState(false);
+  const [partners, setPartners] = useState<PartnerMember[]>([]);
+  const [partnerModalVisible, setPartnerModalVisible] = useState(false);
+  const [editingPartnerIndex, setEditingPartnerIndex] = useState<number | null>(null);
+  
+  // Form do Parceiro
+  const [partnerName, setPartnerName] = useState('');
+  const [partnerHasLife, setPartnerHasLife] = useState(true);
+  const [partnerLifeType, setPartnerLifeType] = useState<'numeric' | 'hit'>('numeric');
+  const [partnerHpInput, setPartnerHpInput] = useState('10');
+  
+  // Nível do Parceiro
+  const [partnerHasLevelSystem, setPartnerHasLevelSystem] = useState(false);
+  const [partnerMaxLevelsInput, setPartnerMaxLevelsInput] = useState('');
+
+  const [partnerSkills, setPartnerSkills] = useState<CharacterSkill[]>([]);
+  const [editingPartnerSkillIndex, setEditingPartnerSkillIndex] = useState<number | null>(null);
+
+  // --- SKILLS (GERAL) ---
   const [tempSkills, setTempSkills] = useState<Partial<CharacterSkill>[]>([]);
   const [skillName, setSkillName] = useState('');
   const [skillDesc, setSkillDesc] = useState('');
@@ -92,6 +129,8 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [isSkillGeneral, setIsSkillGeneral] = useState(false);
   const [editingSkillIndex, setEditingSkillIndex] = useState<number | null>(null);
   const [skillUnlockLevel, setSkillUnlockLevel] = useState('1');
+
+  // --- EVENTOS & EFEITOS ---
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [newEventTitle, setNewEventTitle] = useState('');
   const [newEventDesc, setNewEventDesc] = useState('');
@@ -102,8 +141,8 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [effectType, setEffectType] = useState<'buff' | 'debuff'>('buff');
   const [effectDamage, setEffectDamage] = useState('');
   const [effectDuration, setEffectDuration] = useState('');
-  const [saving, setSaving] = useState(false);
 
+  // ... (DATA FETCHING, AUTH, IMAGE, ROOM LOGIC - MANTIDOS) ...
   const fetchData = useCallback(async () => { try { setLoading(true); const { data: { user } } = await supabase.auth.getUser(); if (user) { setUserEmail(user.email || ''); setUserId(user.id); const { data: profile } = await supabase.from('profiles').select('username').eq('id', user.id).single(); setUsername(profile?.username || user.email?.split('@')[0] || 'Viajante'); const { data: roster, error } = await supabase.from('user_roster').select(`id, current_level, acquired_at, challenge_completed, game_characters (*)`).eq('user_id', user.id).order('acquired_at', { ascending: false }); if (error) console.log("Erro roster:", error.message); else setPlayedCharacters(roster as any || []); } const { data: vict } = await supabase.from('victories').select('*'); setVictories(vict || []); await fetchCatalogs(); } catch (error: any) { console.log(error); } finally { setLoading(false); setRefreshing(false); } }, []);
   const fetchCatalogs = async () => { const { data: chars } = await supabase.from('game_characters').select('*').order('name'); if (chars) setCatalogChars(chars); const { data: events } = await supabase.from('game_events').select('*').order('title'); if (events) setCatalogEvents(events); const { data: effects } = await supabase.from('game_status_effects').select('*').order('title'); if (effects) setCatalogEffects(effects); };
   useEffect(() => { if (lobbyModalVisible) fetchCatalogs(); }, [lobbyModalVisible]);
@@ -122,32 +161,157 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const handleSelectCharacter = async (charId: string) => { if (!currentRoom) return; await supabase.from('room_participants').update({ selected_character_id: charId, is_ready: true }).eq('room_code', currentRoom.code).eq('user_id', userId); const existing = playedCharacters.find(p => p.game_characters && p.game_characters.id === charId); if (!existing) { await supabase.from('user_roster').insert({ user_id: userId, character_id: charId, current_level: 1 }); fetchData(); } };
   const handleStartGame = async () => { if (!currentRoom) return; let availableEvents = catalogEvents; if (availableEvents.length === 0) { const { data } = await supabase.from('game_events').select('*'); if (data && data.length > 0) { availableEvents = data; setCatalogEvents(data); } else { return Alert.alert('Erro', 'Crie um evento antes de iniciar.'); } } const everyoneReady = participants.every(p => p.is_ready); if (!everyoneReady) return Alert.alert('Aguarde', 'Jogadores escolhendo...'); setSaving(true); try { const randomEvent = availableEvents[Math.floor(Math.random() * availableEvents.length)]; const shuffled = [...participants].sort(() => Math.random() - 0.5); for (let i = 0; i < shuffled.length; i++) { const selectedCharId = shuffled[i].selected_character_id; const charData = catalogChars.find(c => c.id === selectedCharId); let initialHp = 10; let initialShield = charData?.base_shield || 0; let initialTeamState: any[] = []; if (charData?.category === 'equipe') { initialHp = 0; initialTeamState = []; } else { initialHp = charData?.base_hp || 10; } await supabase.from('room_participants').update({ turn_order: i + 1, current_hp: initialHp, max_hp: initialHp, current_shield: initialShield, buffs: '', debuffs: '', active_transformations: [], team_state: initialTeamState, active_member_name: null }).eq('id', shuffled[i].id); } await supabase.from('rooms').update({ status: 'playing', selected_event_id: randomEvent.id, current_turn_participant_id: shuffled[0].id }).eq('code', currentRoom.code); } catch (error: any) { Alert.alert('Erro', error.message); } finally { setSaving(false); } };
   const handleLeaveRoom = async () => { if (currentRoom) { if (roomChannelRef.current) supabase.removeChannel(roomChannelRef.current); await supabase.from('room_participants').delete().eq('room_code', currentRoom.code).eq('user_id', userId); } setLobbyModalVisible(false); setCurrentRoom(null); setParticipants([]); };
+  
   const clearSkillForm = () => { setSkillName(''); setSkillDesc(''); setSkillCost(''); setSkillDuration(''); setSkillShieldValue(''); setSkillGeneratesShield(false); setSkillType('active'); setPassiveCondition('normal'); setActiveCondition('normal'); setIsSkillGeneral(false); setEditingSkillIndex(null); setSkillUnlockLevel('1'); setSkillIsHitBased(false); setSkillHitValueInput(''); };
+  
+  // --- PARTNER LOGIC (ATUALIZADO) ---
+  const openAddPartner = () => { 
+      setPartnerName(''); setPartnerHasLife(true); setPartnerLifeType('numeric'); setPartnerHpInput('10'); setPartnerSkills([]); 
+      setPartnerHasLevelSystem(false); setPartnerMaxLevelsInput('');
+      setEditingPartnerIndex(null); setEditingPartnerSkillIndex(null);
+      clearSkillForm(); 
+      setPartnerModalVisible(true); 
+  };
+
+  const openEditPartner = (index: number) => {
+      const p = partners[index];
+      setPartnerName(p.name);
+      setPartnerHasLife(p.has_life);
+      setPartnerLifeType(p.life_type);
+      setPartnerHpInput(p.base_hp.toString());
+      setPartnerSkills(p.skills || []);
+      setPartnerHasLevelSystem(p.has_level_system || false);
+      setPartnerMaxLevelsInput(p.max_levels ? String(p.max_levels) : '');
+      
+      setEditingPartnerIndex(index);
+      setEditingPartnerSkillIndex(null);
+      clearSkillForm();
+      setPartnerModalVisible(true);
+  };
+
+  const addPartnerSkill = () => {
+    if(!skillName) return Alert.alert("Ops", "Nome obrigatório");
+    // Garante que o unlock_level vem do formulário se o sistema de nível estiver ativo
+    const unlockLvl = partnerHasLevelSystem ? parseInt(skillUnlockLevel) : 1;
+
+    const newSkill: CharacterSkill = {
+        id: (editingPartnerSkillIndex !== null) ? partnerSkills[editingPartnerSkillIndex].id : Math.random().toString(), 
+        name: skillName, description: skillDesc, cost: skillCost, type: skillType,
+        passive_type: skillType === 'passive' ? 'individual' : undefined,
+        active_type: skillType === 'active' ? 'individual' : undefined,
+        duration: parseInt(skillDuration) || 0,
+        shield_value: skillGeneratesShield ? parseInt(skillShieldValue) || 0 : 0,
+        unlock_level: isNaN(unlockLvl) ? 1 : unlockLvl,
+        is_hit_based: skillType === 'transformation' ? skillIsHitBased : false,
+        hit_value: (skillType === 'transformation' && skillIsHitBased) ? (parseInt(skillHitValueInput) || 0) : 0
+    };
+
+    if (editingPartnerSkillIndex !== null) {
+        const updatedSkills = [...partnerSkills];
+        updatedSkills[editingPartnerSkillIndex] = newSkill;
+        setPartnerSkills(updatedSkills);
+        Alert.alert("Sucesso", "Habilidade do parceiro atualizada!");
+    } else {
+        setPartnerSkills([...partnerSkills, newSkill]);
+    }
+    
+    setEditingPartnerSkillIndex(null);
+    clearSkillForm();
+  };
+
+  const handleEditPartnerSkill = (index: number) => {
+      const skill = partnerSkills[index];
+      if (!skill) return;
+      setSkillName(skill.name);
+      setSkillDesc(skill.description);
+      setSkillCost(skill.cost || '');
+      setSkillDuration((skill.duration && skill.duration > 0) ? String(skill.duration) : '');
+      setSkillType(skill.type as any); // cast para any
+      setSkillUnlockLevel(skill.unlock_level ? String(skill.unlock_level) : '1'); 
+      setSkillIsHitBased(skill.is_hit_based || false);
+      setSkillHitValueInput(skill.hit_value ? String(skill.hit_value) : '');
+
+      if (skill.shield_value && skill.shield_value > 0) {
+          setSkillGeneratesShield(true);
+          setSkillShieldValue(String(skill.shield_value));
+      } else {
+          setSkillGeneratesShield(false);
+          setSkillShieldValue('');
+      }
+
+      setEditingPartnerSkillIndex(index);
+  };
+
+  const removePartnerSkill = (index: number) => {
+      Alert.alert("Excluir Skill", "Apagar habilidade do parceiro?", [
+          { text: "Cancelar", style: "cancel" },
+          { text: "Apagar", style: "destructive", onPress: () => {
+              const updated = [...partnerSkills];
+              updated.splice(index, 1);
+              setPartnerSkills(updated);
+          }}
+      ]);
+  };
+
+  const savePartner = () => {
+      if(!partnerName) return Alert.alert("Ops", "Nome do parceiro?");
+      const finalHp = partnerHasLife ? (parseInt(partnerHpInput) || 1) : 0;
+      
+      const partnerData: PartnerMember = {
+          name: partnerName, base_hp: finalHp, has_life: partnerHasLife, life_type: partnerLifeType, skills: partnerSkills,
+          has_level_system: partnerHasLevelSystem,
+          max_levels: partnerHasLevelSystem ? (parseInt(partnerMaxLevelsInput) || 0) : 0
+      };
+      if (editingPartnerIndex !== null) { const updatedPartners = [...partners]; updatedPartners[editingPartnerIndex] = partnerData; setPartners(updatedPartners); Alert.alert("Sucesso", "Parceiro atualizado!"); } else { setPartners([...partners, partnerData]); }
+      setPartnerModalVisible(false);
+  };
+  const removePartner = (index: number) => { Alert.alert("Remover", "Deseja remover este parceiro?", [ {text:"Cancelar", style: "cancel"}, {text:"Sim, Remover", style: "destructive", onPress:()=>{ const p = [...partners]; p.splice(index, 1); setPartners(p); }}]); };
+
+  // ... (EDIT CHAR SKILL & RESTO DO CÓDIGO - MANTIDO IGUAL)
   const handleEditSkill = (index: number) => { const skill = tempSkills[index]; if (!skill) return; setSkillName(skill.name || ''); setSkillDesc(skill.description || ''); setSkillCost(skill.cost || ''); setSkillDuration((skill.duration !== undefined && skill.duration !== -1) ? String(skill.duration) : ''); setSkillType(skill.type || 'active'); setSkillUnlockLevel(skill.unlock_level ? String(skill.unlock_level) : '1'); setSkillIsHitBased(skill.is_hit_based || false); setSkillHitValueInput(skill.hit_value ? String(skill.hit_value) : ''); const pType = skill.passive_type; const aType = skill.active_type; if (skill.type === 'passive') { if (pType === 'general') { setPassiveCondition('normal'); setIsSkillGeneral(true); } else if (pType === 'general_transformed') { setPassiveCondition('transformed'); setIsSkillGeneral(true); } else if (pType === 'transformed') { setPassiveCondition('transformed'); setIsSkillGeneral(false); } else { setPassiveCondition('normal'); setIsSkillGeneral(false); } } else if (skill.type === 'active') { if (aType === 'general') { setActiveCondition('normal'); setIsSkillGeneral(true); } else if (aType === 'transformed') { setActiveCondition('transformed'); setIsSkillGeneral(false); } else { setActiveCondition('normal'); setIsSkillGeneral(false); } } if (skill.shield_value && skill.shield_value > 0) { setSkillGeneratesShield(true); setSkillShieldValue(String(skill.shield_value)); } else { setSkillGeneratesShield(false); setSkillShieldValue(''); } setEditingSkillIndex(index); };
-  const openCreateCharModal = () => { setEditingCharId(null); setNewName(''); setNewOrigin(''); setNewClass(''); setNewImage(''); setHpInput1('10'); setNewCategory('individual'); setTeamMembers([]); setMemberName(''); setMemberHp(''); setHasShield(false); setShieldInput('0'); setPickedImageUri(''); setTempSkills([]); clearSkillForm(); setNewBanner(''); setPickedBannerUri(''); setHasLevelSystem(false); setMaxLevelsInput(''); setCreateCharModalVisible(true); };
-  const openEditCharModal = async (char: GameCharacterWithCreator) => { setEditingCharId(char.id); setNewName(char.name); setNewOrigin(char.anime_origin); setNewClass(char.base_class); setNewImage(char.image_url || ''); setPickedImageUri(''); setNewCategory(char.category || 'individual'); if (char.category === 'equipe') { setTeamMembers(char.team_members || []); setHpInput1('0'); } else { setHpInput1(String(char.base_hp)); } setHasShield((char.base_shield || 0) > 0); setShieldInput(String(char.base_shield || 0)); setNewBanner(char.challenge_banner_url || ''); setPickedBannerUri(''); setHasLevelSystem(char.has_level_system || false); setMaxLevelsInput(char.max_levels ? String(char.max_levels) : ''); const { data: skills } = await supabase.from('character_skills').select('*').eq('character_id', char.id); if(skills) { setTempSkills(skills.map(s => ({ id: s.id, name: s.name, description: s.description, type: s.type as any, passive_type: s.passive_type, active_type: s.active_type, cost: s.cost || '', duration: s.duration || 0, shield_value: s.shield_value || 0, unlock_level: s.unlock_level || 1, is_hit_based: s.is_hit_based || false, hit_value: s.hit_value || 0 }))); } else { setTempSkills([]); } clearSkillForm(); setCreateCharModalVisible(true); };
+  const openCreateCharModal = () => { setEditingCharId(null); setNewName(''); setNewOrigin(''); setNewClass(''); setNewImage(''); setHpInput1('10'); setNewCategory('individual'); setTeamMembers([]); setMemberName(''); setMemberHp(''); setHasShield(false); setShieldInput('0'); setPickedImageUri(''); setTempSkills([]); clearSkillForm(); setNewBanner(''); setPickedBannerUri(''); setHasLevelSystem(false); setMaxLevelsInput(''); setHasPartners(false); setPartners([]); setCreateCharModalVisible(true); };
+  const openEditCharModal = async (char: GameCharacterWithCreator) => { setEditingCharId(char.id); setNewName(char.name); setNewOrigin(char.anime_origin); setNewClass(char.base_class); setNewImage(char.image_url || ''); setPickedImageUri(''); setNewCategory(char.category || 'individual'); if (char.category === 'equipe') { setTeamMembers(char.team_members || []); setHpInput1('0'); setHasPartners(false); setPartners([]); } else { setHpInput1(String(char.base_hp)); if (char.team_members && char.team_members.length > 0) { setHasPartners(true); setPartners(char.team_members as PartnerMember[]); } else { setHasPartners(false); setPartners([]); } } setHasShield((char.base_shield || 0) > 0); setShieldInput(String(char.base_shield || 0)); setNewBanner(char.challenge_banner_url || ''); setPickedBannerUri(''); setHasLevelSystem(char.has_level_system || false); setMaxLevelsInput(char.max_levels ? String(char.max_levels) : ''); const { data: skills } = await supabase.from('character_skills').select('*').eq('character_id', char.id); if(skills) { setTempSkills(skills.map(s => ({ id: s.id, name: s.name, description: s.description, type: s.type as any, passive_type: s.passive_type, active_type: s.active_type, cost: s.cost || '', duration: s.duration || 0, shield_value: s.shield_value || 0, unlock_level: s.unlock_level || 1, is_hit_based: s.is_hit_based || false, hit_value: s.hit_value || 0 }))); } else { setTempSkills([]); } clearSkillForm(); setCreateCharModalVisible(true); };
   const addMemberToTeam = () => { const hp = parseInt(memberHp); if (!memberName || isNaN(hp)) { Alert.alert("Ops", "Preencha nome e vida válida."); return; } const generalSkills = tempSkills.filter(s => (s.type === 'passive' && (s.passive_type === 'general' || s.passive_type === 'general_transformed')) || (s.type === 'active' && s.active_type === 'general')); setTeamMembers([...teamMembers, { name: memberName, base_hp: hp, skills: generalSkills as CharacterSkill[] }]); setMemberName(''); setMemberHp(''); };
-  const removeMemberFromTeam = (index: number) => { const updated = [...teamMembers]; updated.splice(index, 1); setTeamMembers(updated); };
+  const removeMemberFromTeam = (index: number) => { Alert.alert("Remover Membro", "Tem certeza?", [ { text: "Cancelar", style: "cancel" }, { text: "Remover", style: "destructive", onPress: () => { const updated = [...teamMembers]; updated.splice(index, 1); setTeamMembers(updated); }}]); };
   const openMemberSkills = (index: number) => { setCurrentMemberIndex(index); const member = teamMembers[index]; setTempSkills(member.skills || []); clearSkillForm(); setMemberSkillsModalVisible(true); };
   const closeMemberSkills = () => { if (currentMemberIndex !== null) { const updatedMembers = [...teamMembers]; updatedMembers[currentMemberIndex].skills = tempSkills as CharacterSkill[]; setTeamMembers(updatedMembers); } setTempSkills([]); setCurrentMemberIndex(null); clearSkillForm(); setMemberSkillsModalVisible(false); };
   const addSkillToTempList = () => { if (!skillName) return Alert.alert("Ops", "Dê um nome para a habilidade"); let finalPassiveType = undefined; let finalActiveType = undefined; if (skillType === 'passive') { if (passiveCondition === 'normal') finalPassiveType = isSkillGeneral ? 'general' : 'individual'; else finalPassiveType = isSkillGeneral ? 'general_transformed' : 'transformed'; } else if (skillType === 'active') { if (activeCondition === 'normal') finalActiveType = isSkillGeneral ? 'general' : 'individual'; else finalActiveType = 'transformed'; } const parsedDuration = parseInt(skillDuration); const finalDuration = (!skillDuration || isNaN(parsedDuration)) ? -1 : parsedDuration; const level = parseInt(skillUnlockLevel); const finalLevel = (isNaN(level) || level < 1) ? 1 : level; const newSkillData: Partial<CharacterSkill> = { id: editingSkillIndex !== null ? tempSkills[editingSkillIndex].id : Math.random().toString(), name: skillName, description: skillDesc, cost: skillCost, type: skillType, passive_type: finalPassiveType as any, active_type: finalActiveType as any, duration: finalDuration, shield_value: skillGeneratesShield ? (parseInt(skillShieldValue) || 0) : 0, unlock_level: finalLevel, is_hit_based: skillType === 'transformation' ? skillIsHitBased : false, hit_value: (skillType === 'transformation' && skillIsHitBased) ? (parseInt(skillHitValueInput) || 0) : 0 }; const isGeneral = (newCategory === 'equipe') && (finalPassiveType?.includes('general') || finalActiveType === 'general'); if (isGeneral && teamMembers.length > 0) { const updatedMembers = teamMembers.map(m => { const currentSkills = m.skills || []; if (editingSkillIndex !== null && tempSkills[editingSkillIndex]) { const skillToReplaceId = tempSkills[editingSkillIndex].id; const hasSkill = currentSkills.some(s => s.id === skillToReplaceId); if (hasSkill) { const newSkills = currentSkills.map(s => s.id === skillToReplaceId ? {...s, ...newSkillData} : s); return { ...m, skills: newSkills as CharacterSkill[] }; } else { return { ...m, skills: [...currentSkills, newSkillData] as CharacterSkill[] }; } } else { return { ...m, skills: [...currentSkills, newSkillData] as CharacterSkill[] }; } }); setTeamMembers(updatedMembers); Alert.alert("Aplicado", "Habilidade Geral propagada para todos os membros!"); } if (editingSkillIndex !== null) { const updatedSkills = [...tempSkills]; updatedSkills[editingSkillIndex] = newSkillData; setTempSkills(updatedSkills); Alert.alert("Sucesso", "Habilidade atualizada!"); } else { setTempSkills([...tempSkills, newSkillData]); } clearSkillForm(); };
-  const removeSkillFromTemp = (index: number) => { const skillToRemove = tempSkills[index]; if (newCategory === 'equipe' && skillToRemove) { const isGeneral = (skillToRemove.type === 'passive' && (skillToRemove.passive_type === 'general' || skillToRemove.passive_type === 'general_transformed')) || (skillToRemove.type === 'active' && skillToRemove.active_type === 'general'); if (isGeneral) { const updatedMembers = teamMembers.map(m => ({ ...m, skills: (m.skills || []).filter(s => s.id !== skillToRemove.id) })); setTeamMembers(updatedMembers); Alert.alert("Removido", "Habilidade Geral removida de todos os membros."); } } const updated = [...tempSkills]; updated.splice(index, 1); setTempSkills(updated); };
+  const removeSkillFromTemp = (index: number) => { Alert.alert("Apagar Habilidade", "Tem certeza?", [ { text: "Cancelar", style: "cancel" }, { text: "Apagar", style: "destructive", onPress: () => { const skillToRemove = tempSkills[index]; if (newCategory === 'equipe' && skillToRemove) { const isGeneral = (skillToRemove.type === 'passive' && (skillToRemove.passive_type === 'general' || skillToRemove.passive_type === 'general_transformed')) || (skillToRemove.type === 'active' && skillToRemove.active_type === 'general'); if (isGeneral) { const updatedMembers = teamMembers.map(m => ({ ...m, skills: (m.skills || []).filter(s => s.id !== skillToRemove.id) })); setTeamMembers(updatedMembers); Alert.alert("Removido", "Habilidade Geral removida de todos os membros."); } } const updated = [...tempSkills]; updated.splice(index, 1); setTempSkills(updated); }}]); };
   const handleDeleteChar = async (id: string) => { Alert.alert("Excluir", "Tem certeza?", [ { text: "Cancelar" }, { text: "Excluir", onPress: async () => { await supabase.from('game_characters').delete().eq('id', id); fetchCatalogs(); }}]); };
-  const handleSaveChar = async () => { if(!newName || !newOrigin || !newClass) return Alert.alert("Erro", "Preencha os dados básicos"); setSaving(true); try { let finalImageUrl = newImage; if (pickedImageUri) { const uploadedUrl = await uploadToSupabase(pickedImageUri); if (uploadedUrl) finalImageUrl = uploadedUrl; else throw new Error("Falha no upload da imagem"); } let finalBannerUrl = newBanner; if (pickedBannerUri) { const uploadedBannerUrl = await uploadToSupabase(pickedBannerUri); if (uploadedBannerUrl) finalBannerUrl = uploadedBannerUrl; else throw new Error("Falha no upload do banner"); } let finalHp = 10; let finalUnitCount = 1; if (newCategory === 'equipe') { finalHp = 0; finalUnitCount = teamMembers.length; if (teamMembers.length === 0) return Alert.alert("Erro", "Adicione membros."); } else if (newCategory === 'hit') { finalHp = parseInt(hpInput1) || 1; } else { finalHp = parseInt(hpInput1) || 10; } const charPayload = { name: newName, anime_origin: newOrigin, base_class: newClass, image_url: finalImageUrl || null, challenge_banner_url: finalBannerUrl || null, base_hp: finalHp, category: newCategory, unit_count: finalUnitCount, team_members: newCategory === 'equipe' ? teamMembers : null, base_shield: hasShield ? (parseInt(shieldInput) || 0) : 0, has_level_system: hasLevelSystem, max_levels: hasLevelSystem ? (parseInt(maxLevelsInput) || 0) : 0 }; let charId = editingCharId; if(editingCharId) { await supabase.from('game_characters').update(charPayload).eq('id', editingCharId); if (newCategory === 'equipe') { await supabase.from('character_skills').delete().eq('character_id', editingCharId); } else { await supabase.from('character_skills').delete().eq('character_id', editingCharId); } } else { const { data, error } = await supabase.from('game_characters').insert(charPayload).select().single(); if (error) throw error; charId = data.id; } if (charId && newCategory !== 'equipe' && tempSkills.length > 0) { const skillsToInsert = tempSkills.map(s => ({ character_id: charId, name: s.name, description: s.description, type: s.type, passive_type: s.passive_type, active_type: s.active_type, cost: s.cost, duration: s.duration, shield_value: s.shield_value, unlock_level: s.unlock_level || 1, is_hit_based: s.is_hit_based, hit_value: s.hit_value })); const { error: skillError } = await supabase.from('character_skills').insert(skillsToInsert); if (skillError) throw skillError; } Alert.alert("Sucesso", "Personagem salvo!"); setCreateCharModalVisible(false); fetchCatalogs(); if(currentRoom) setLobbyModalVisible(true); } catch (e: any) { Alert.alert("Erro ao salvar", e.message); } finally { setSaving(false); setUploadingImage(false); } };
+  const handleSaveChar = async () => { if(!newName || !newOrigin || !newClass) return Alert.alert("Erro", "Preencha os dados básicos"); setSaving(true); try { let finalImageUrl = newImage; if (pickedImageUri) { const uploadedUrl = await uploadToSupabase(pickedImageUri); if (uploadedUrl) finalImageUrl = uploadedUrl; else throw new Error("Falha no upload da imagem"); } let finalBannerUrl = newBanner; if (pickedBannerUri) { const uploadedBannerUrl = await uploadToSupabase(pickedBannerUri); if (uploadedBannerUrl) finalBannerUrl = uploadedBannerUrl; else throw new Error("Falha no upload do banner"); } let finalHp = 10; let finalUnitCount = 1; let finalTeamData: any = null; if (newCategory === 'equipe') { finalHp = 0; finalUnitCount = teamMembers.length; if (teamMembers.length === 0) return Alert.alert("Erro", "Adicione membros."); finalTeamData = teamMembers; } else { if (newCategory === 'hit') finalHp = parseInt(hpInput1) || 1; else finalHp = parseInt(hpInput1) || 10; if (hasPartners && partners.length > 0) { finalTeamData = partners; finalUnitCount = 1 + partners.length; } } const charPayload = { name: newName, anime_origin: newOrigin, base_class: newClass, image_url: finalImageUrl || null, challenge_banner_url: finalBannerUrl || null, base_hp: finalHp, category: newCategory, unit_count: finalUnitCount, team_members: finalTeamData, base_shield: hasShield ? (parseInt(shieldInput) || 0) : 0, has_level_system: hasLevelSystem, max_levels: hasLevelSystem ? (parseInt(maxLevelsInput) || 0) : 0 }; let charId = editingCharId; if(editingCharId) { await supabase.from('game_characters').update(charPayload).eq('id', editingCharId); await supabase.from('character_skills').delete().eq('character_id', editingCharId); } else { const { data, error } = await supabase.from('game_characters').insert(charPayload).select().single(); if (error) throw error; charId = data.id; } if (charId && newCategory !== 'equipe' && tempSkills.length > 0) { const skillsToInsert = tempSkills.map(s => ({ character_id: charId, name: s.name, description: s.description, type: s.type, passive_type: s.passive_type, active_type: s.active_type, cost: s.cost, duration: s.duration, shield_value: s.shield_value, unlock_level: s.unlock_level || 1, is_hit_based: s.is_hit_based, hit_value: s.hit_value })); const { error: skillError } = await supabase.from('character_skills').insert(skillsToInsert); if (skillError) throw skillError; } Alert.alert("Sucesso", "Personagem salvo!"); setCreateCharModalVisible(false); fetchCatalogs(); if(currentRoom) setLobbyModalVisible(true); } catch (e: any) { Alert.alert("Erro ao salvar", e.message); } finally { setSaving(false); setUploadingImage(false); } };
   const openCreateEventModal = () => { setEditingEventId(null); setNewEventTitle(''); setNewEventDesc(''); setNewEventImage(''); setCreateEventModalVisible(true); };
   const openEditEventModal = (ev: GameEvent) => { setEditingEventId(ev.id); setNewEventTitle(ev.title); setNewEventDesc(ev.description); setNewEventImage(ev.image_url||''); setCreateEventModalVisible(true); }
   const handleSaveEvent = async () => { if(!newEventTitle) return; const p = {title:newEventTitle, description:newEventDesc, image_url:newEventImage||null}; if(editingEventId) await supabase.from('game_events').update(p).eq('id',editingEventId); else await supabase.from('game_events').insert(p); setCreateEventModalVisible(false); fetchCatalogs(); };
-  const deleteEvent = async(id:string) => { await supabase.from('game_events').delete().eq('id',id); fetchCatalogs(); }
+  const deleteEvent = async(id:string) => { Alert.alert("Apagar Evento", "Confirmar?", [{text:"Cancelar"}, {text:"Apagar", onPress:async()=>{await supabase.from('game_events').delete().eq('id',id); fetchCatalogs();}}]); }
   const openCreateEffectModal = () => { setEditingEffectId(null); setEffectTitle(''); setEffectDesc(''); setEffectDamage(''); setEffectDuration(''); setEffectType('buff'); setCreateEffectModalVisible(true); };
   const openEditEffectModal = (eff: StatusEffect) => { setEditingEffectId(eff.id); setEffectTitle(eff.title); setEffectDesc(eff.description); setEffectType(eff.type); setEffectDamage(eff.damage || ''); setEffectDuration(String(eff.duration || '')); setCreateEffectModalVisible(true); };
   const handleSaveEffect = async () => { if(!effectTitle) return Alert.alert("Erro", "Título é obrigatório"); const p = { title: effectTitle, description: effectDesc, type: effectType, damage: effectType === 'debuff' ? effectDamage : null, duration: parseInt(effectDuration) || 0 }; if(editingEffectId) await supabase.from('game_status_effects').update(p).eq('id', editingEffectId); else await supabase.from('game_status_effects').insert(p); setCreateEffectModalVisible(false); fetchCatalogs(); };
-  const deleteEffect = async(id:string) => { await supabase.from('game_status_effects').delete().eq('id',id); fetchCatalogs(); };
+  const deleteEffect = async(id:string) => { Alert.alert("Apagar Efeito", "Confirmar?", [{text:"Cancelar"}, {text:"Apagar", onPress:async()=>{await supabase.from('game_status_effects').delete().eq('id',id); fetchCatalogs();}}]); };
   
   const getCategoryColor = (cat?: string) => { switch(cat) { case 'equipe': return '#FFD700'; case 'hit': return '#ff4444'; default: return '#00B37E'; } };
   const formatDuration = (seconds: number) => { const mins = Math.floor(seconds / 60); const secs = seconds % 60; return `${mins}m ${secs}s`; };
   const getSubtypeLabel = (type?: string) => { switch(type) { case 'general': return 'GERAL'; case 'general_transformed': return 'GERAL (TRANSF)'; case 'transformed': return 'TRANSF.'; default: return 'INDIV.'; } };
   const getSubtypeColor = (type?: string) => { switch(type) { case 'general': return '#00B37E'; case 'general_transformed': return '#FF4444'; case 'transformed': return '#ff8800'; default: return '#8257e5'; } };
-  const renderPlayedChar = (item: UserRosterItem) => { if (!item.game_characters) return null; return ( <TouchableOpacity key={item.id} style={styles.card} onPress={() => handleOpenDetails(item)}> {item.game_characters?.image_url ? <Image source={{ uri: item.game_characters.image_url }} style={styles.charImage} /> : <View style={[styles.charIcon, { backgroundColor: '#3e2e6b' }]}><Text style={{fontSize: 20}}>⚔️</Text></View> } <View style={{flex: 1}}> <Text style={styles.cardTitle}>{item.game_characters?.name || 'Unknown'}</Text> <View style={{flexDirection:'row', alignItems:'center'}}> <Text style={styles.cardSubtitle}>Nível {item.current_level} • {item.game_characters?.base_class}</Text> <View style={{marginLeft: 8, paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getCategoryColor(item.game_characters?.category), opacity: 0.8}}> <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{item.game_characters?.category?.toUpperCase() || 'IND.'}</Text> </View> </View> </View> </TouchableOpacity> ); };
+  const renderPlayedChar = (item: UserRosterItem) => { 
+    if (!item.game_characters) return null; 
+    return ( 
+      <TouchableOpacity key={item.id} style={styles.card} onPress={() => handleOpenDetails(item)}> 
+        {item.game_characters?.image_url ? 
+          <Image source={{ uri: item.game_characters.image_url }} style={styles.charImage} /> : 
+          <View style={[styles.charIcon, { backgroundColor: '#3e2e6b' }]}><Text style={{fontSize: 20}}>⚔️</Text></View> 
+        } 
+        <View style={{flex: 1}}> 
+          <Text style={styles.cardTitle}>{item.game_characters?.name || 'Unknown'}</Text> 
+          <View style={{flexDirection:'row', alignItems:'center'}}> 
+            <Text style={styles.cardSubtitle}>Nível {item.current_level} • {item.game_characters?.base_class}</Text> 
+            <View style={{marginLeft: 8, paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getCategoryColor(item.game_characters?.category), opacity: 0.8}}> 
+              <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{item.game_characters?.category?.toUpperCase() || 'IND.'}</Text> 
+            </View> 
+          </View> 
+        </View> 
+      </TouchableOpacity> 
+    ); 
+  };
 
   return (
     <View style={styles.container}>
@@ -160,13 +324,13 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       </ScrollView>
 
       {/* LOBBY */}
-      <Modal animationType="slide" transparent={false} visible={lobbyModalVisible} onRequestClose={()=>{}}><View style={styles.lobbyContainer}><View style={styles.lobbyHeader}><Text style={styles.lobbyTitle}>Sala: {currentRoom?.code}</Text><TouchableOpacity onPress={handleLeaveRoom}><Ionicons name="close-circle" size={32} color="#ff4444" /></TouchableOpacity></View>{currentRoom?.status === 'waiting' && (<View style={{flex: 1, justifyContent:'center', alignItems:'center'}}><Text style={styles.phaseTitle}>Aguardando...</Text><View style={styles.participantsList}>{participants.map(p => (<View key={p.id} style={styles.participantRow}><Ionicons name="person" size={20} color="#fff" /><Text style={styles.participantName}>{p.username}</Text>{p.user_id === currentRoom.host_id && <Text style={{color:'#FFD700', marginLeft:5}}>👑</Text>}</View>))}</View>{userId === currentRoom.host_id ? (<TouchableOpacity style={styles.actionButton} onPress={handleStartSelection}><Text style={styles.actionButtonText}>INICIAR SELEÇÃO</Text></TouchableOpacity>) : (<Text style={{color:'#777'}}>Aguardando Host...</Text>)}</View>)}{currentRoom?.status === 'selecting' && (<View style={{flex: 1}}><Text style={styles.phaseTitle}>Escolha seu Herói</Text><Text style={{color:'#ccc', textAlign:'center', marginBottom:10}}>{participants.filter(p => p.is_ready).length} / {participants.length} prontos</Text>{participants.find(p => p.user_id === userId)?.is_ready ? (<View style={{flex:1, justifyContent:'center', alignItems:'center'}}><Ionicons name="checkmark-circle" size={64} color="#00B37E" /><Text style={{color:'#fff', marginTop:10}}>Selecionado!</Text>{userId === currentRoom.host_id && participants.every(p => p.is_ready) && (<TouchableOpacity style={[styles.actionButton, {marginTop:30, backgroundColor:'#FFD700'}]} onPress={handleStartGame} disabled={saving}><Text style={[styles.actionButtonText, {color:'#000'}]}>INICIAR PARTIDA</Text></TouchableOpacity>)}</View>) : (<FlatList data={catalogChars} keyExtractor={item => item.id} renderItem={({item}) => (<View style={styles.catalogItem}><TouchableOpacity style={{flex: 1, flexDirection:'row', alignItems:'center'}} onPress={() => handleSelectCharacter(item.id)}>{item.image_url && <Image source={{uri: item.image_url}} style={styles.catalogImage} />}<View style={styles.catalogInfo}><Text style={styles.catalogName}>{item.name} (HP: {item.base_hp})</Text><View style={{flexDirection:'row'}}><Text style={styles.catalogOrigin}>{item.base_class}</Text><Text style={[styles.catalogOrigin, {marginLeft: 10, color: getCategoryColor(item.category), fontWeight:'bold'}]}>• {item.category?.toUpperCase() || 'INDIVIDUAL'}</Text></View></View><Ionicons name="arrow-forward-circle" size={32} color="#8257e5" /></TouchableOpacity><View style={{flexDirection:'row', marginLeft: 10}}><TouchableOpacity onPress={() => openEditCharModal(item)} style={{padding:5}}><Ionicons name="pencil" size={20} color="#8257e5" /></TouchableOpacity><TouchableOpacity onPress={() => handleDeleteChar(item.id)} style={{padding:5}}><Ionicons name="trash" size={20} color="#ff4444" /></TouchableOpacity></View></View>)}/>)}</View>)}</View></Modal>
+      <Modal animationType="slide" transparent={false} visible={lobbyModalVisible} onRequestClose={()=>{}}><View style={styles.lobbyContainer}><View style={styles.lobbyHeader}><Text style={styles.lobbyTitle}>Sala: {currentRoom?.code}</Text><TouchableOpacity onPress={handleLeaveRoom}><Ionicons name="close-circle" size={32} color="#ff4444" /></TouchableOpacity></View>{currentRoom?.status === 'waiting' && (<View style={{flex: 1, justifyContent:'center', alignItems:'center'}}><Text style={styles.phaseTitle}>Aguardando...</Text><View style={styles.participantsList}>{participants.map(p => (<View key={p.id} style={styles.participantRow}><Ionicons name="person" size={20} color="#fff" /><Text style={styles.participantName}>{p.username}</Text>{!!(p.user_id === currentRoom.host_id) && <Text style={{color:'#FFD700', marginLeft:5}}>👑</Text>}</View>))}</View>{userId === currentRoom.host_id ? (<TouchableOpacity style={styles.actionButton} onPress={handleStartSelection}><Text style={styles.actionButtonText}>INICIAR SELEÇÃO</Text></TouchableOpacity>) : (<Text style={{color:'#777'}}>Aguardando Host...</Text>)}</View>)}{currentRoom?.status === 'selecting' && (<View style={{flex: 1}}><Text style={styles.phaseTitle}>Escolha seu Herói</Text><Text style={{color:'#ccc', textAlign:'center', marginBottom:10}}>{participants.filter(p => p.is_ready).length} / {participants.length} prontos</Text>{participants.find(p => p.user_id === userId)?.is_ready ? (<View style={{flex:1, justifyContent:'center', alignItems:'center'}}><Ionicons name="checkmark-circle" size={64} color="#00B37E" /><Text style={{color:'#fff', marginTop:10}}>Selecionado!</Text>{userId === currentRoom.host_id && participants.every(p => p.is_ready) && (<TouchableOpacity style={[styles.actionButton, {marginTop:30, backgroundColor:'#FFD700'}]} onPress={handleStartGame} disabled={saving}><Text style={[styles.actionButtonText, {color:'#000'}]}>INICIAR PARTIDA</Text></TouchableOpacity>)}</View>) : (<FlatList data={catalogChars} keyExtractor={item => item.id} renderItem={({item}) => (<View style={styles.catalogItem}><TouchableOpacity style={{flex: 1, flexDirection:'row', alignItems:'center'}} onPress={() => handleSelectCharacter(item.id)}>{item.image_url ? <Image source={{uri: item.image_url}} style={styles.catalogImage} /> : <View style={styles.catalogImage} /> }<View style={styles.catalogInfo}><Text style={styles.catalogName}>{item.name} (HP: {item.base_hp})</Text><View style={{flexDirection:'row'}}><Text style={styles.catalogOrigin}>{item.base_class}</Text><Text style={[styles.catalogOrigin, {marginLeft: 10, color: getCategoryColor(item.category), fontWeight:'bold'}]}>• {item.category?.toUpperCase() || 'INDIVIDUAL'}</Text></View></View><Ionicons name="arrow-forward-circle" size={32} color="#8257e5" /></TouchableOpacity><View style={{flexDirection:'row', marginLeft: 10}}><TouchableOpacity onPress={() => openEditCharModal(item)} style={{padding:5}}><Ionicons name="pencil" size={20} color="#8257e5" /></TouchableOpacity><TouchableOpacity onPress={() => handleDeleteChar(item.id)} style={{padding:5}}><Ionicons name="trash" size={20} color="#ff4444" /></TouchableOpacity></View></View>)}/>)}</View>)}</View></Modal>
       
       {/* CREATE CHAR MODAL */}
       <Modal transparent visible={createCharModalVisible} animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={[styles.modalContent, {maxHeight: '90%'}]}>
-            <ScrollView>
+            <ScrollView contentContainerStyle={{paddingBottom: 50}}>
                 <Text style={styles.modalTitle}>{editingCharId ? "Editar Personagem" : "Novo Personagem"}</Text>
                 
                 <Text style={styles.sectionHeader}>DADOS BÁSICOS</Text>
@@ -207,10 +371,43 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     </View>
                 )}
 
+                {/* PARCEIROS (Para Individual/Hit) */}
+                {newCategory !== 'equipe' && (
+                  <View style={{marginTop:10, marginBottom:15, padding:10, backgroundColor:'#222', borderRadius:8}}>
+                    <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                        <Text style={{color:'#fff', fontWeight:'bold'}}>Possui Parceiros/Invocações?</Text>
+                        <TouchableOpacity onPress={() => setHasPartners(!hasPartners)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: hasPartners ? '#00B37E' : 'transparent'}}>
+                            {!!hasPartners && <Ionicons name="checkmark" size={18} color="#fff" />}
+                        </TouchableOpacity>
+                    </View>
+                    
+                    {hasPartners && (
+                      <View>
+                        {partners.map((p, idx) => (
+                           <View key={idx} style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', padding:8, backgroundColor:'#2a2a2a', borderRadius:6, marginBottom:5}}>
+                              <View>
+                                <Text style={{color:'#fff', fontWeight:'bold'}}>{p.name}</Text>
+                                <Text style={{color:'#777', fontSize:10}}>{p.has_life ? (p.life_type === 'hit' ? `${p.base_hp} Hits` : `${p.base_hp} HP`) : 'Sem Vida'} • {p.skills?.length || 0} Skills</Text>
+                              </View>
+                              <View style={{flexDirection: 'row'}}>
+                                <TouchableOpacity onPress={()=>openEditPartner(idx)} style={{marginRight:10}}><Ionicons name="pencil" size={18} color="#FFD700"/></TouchableOpacity>
+                                <TouchableOpacity onPress={()=>removePartner(idx)}><Ionicons name="trash" size={18} color="#ff4444"/></TouchableOpacity>
+                              </View>
+                           </View>
+                        ))}
+                        <TouchableOpacity onPress={openAddPartner} style={{flexDirection:'row', alignItems:'center', justifyContent:'center', padding:10, backgroundColor:'#333', borderRadius:6, marginTop:5}}>
+                          <Ionicons name="add-circle" size={18} color="#FFD700" style={{marginRight:5}} />
+                          <Text style={{color:'#FFD700', fontSize:12}}>Adicionar Parceiro</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                )}
+
                 <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
                     <Text style={{color:'#fff', fontWeight:'bold'}}>Possui Escudo Inicial?</Text>
                     <TouchableOpacity onPress={() => setHasShield(!hasShield)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: hasShield ? '#00B37E' : 'transparent'}}>
-                        {hasShield && <Ionicons name="checkmark" size={18} color="#fff" />}
+                        {!!hasShield && <Ionicons name="checkmark" size={18} color="#fff" />}
                     </TouchableOpacity>
                 </View>
                 {hasShield && (
@@ -222,7 +419,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
                         <Text style={{color:'#fff', fontWeight:'bold'}}>Possui Sistema de Nível?</Text>
                         <TouchableOpacity onPress={() => setHasLevelSystem(!hasLevelSystem)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: hasLevelSystem ? '#00B37E' : 'transparent'}}>
-                            {hasLevelSystem && <Ionicons name="checkmark" size={18} color="#fff" />}
+                            {!!hasLevelSystem && <Ionicons name="checkmark" size={18} color="#fff" />}
                         </TouchableOpacity>
                     </View>
                     {hasLevelSystem && (
@@ -264,7 +461,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
 
                     {skillType !== 'passive' && (<View><TextInput style={[styles.input, {marginBottom:10}]} placeholder="Custo" placeholderTextColor="#555" value={skillCost} onChangeText={setSkillCost}/><TextInput style={[styles.input, {marginBottom:10}]} placeholder="Duração (Vazio = Infinito)" placeholderTextColor="#555" value={skillDuration} onChangeText={setSkillDuration} keyboardType="numeric"/></View>)}
                     
-                    <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}><Text style={{color:'#aaa', fontSize:12}}>Gera Escudo?</Text><TouchableOpacity onPress={() => setSkillGeneratesShield(!skillGeneratesShield)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillGeneratesShield ? '#FFD700' : 'transparent'}}>{skillGeneratesShield && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity></View>
+                    <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}><Text style={{color:'#aaa', fontSize:12}}>Gera Escudo?</Text><TouchableOpacity onPress={() => setSkillGeneratesShield(!skillGeneratesShield)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillGeneratesShield ? '#FFD700' : 'transparent'}}>{!!skillGeneratesShield && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity></View>
                     {skillGeneratesShield && (<TextInput style={[styles.input, {marginBottom:10}]} placeholder="Valor do Escudo" placeholderTextColor="#555" value={skillShieldValue} onChangeText={setSkillShieldValue} keyboardType="numeric"/>)}
                     <View style={{flexDirection:'row', justifyContent:'space-around', marginBottom:15}}><TouchableOpacity onPress={()=>setSkillType('active')} style={[styles.typeBadge, skillType==='active' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}><Text style={styles.typeText}>Ativa</Text></TouchableOpacity><TouchableOpacity onPress={()=>setSkillType('passive')} style={[styles.typeBadge, skillType==='passive' && {backgroundColor:'#8257e5', borderColor:'#8257e5'}]}><Text style={styles.typeText}>Passiva</Text></TouchableOpacity><TouchableOpacity onPress={()=>setSkillType('transformation')} style={[styles.typeBadge, skillType==='transformation' && {backgroundColor:'#FFD700', borderColor:'#FFD700'}]}><Text style={[styles.typeText, skillType==='transformation' && {color:'black'}]}>Transform</Text></TouchableOpacity></View>
                     
@@ -272,7 +469,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                         <View>
                             <View style={{flexDirection:'row', alignItems:'center', marginBottom:10, justifyContent:'center'}}>
                                 <Text style={{color:'#fff', marginRight:10, fontSize:12}}>Vida vira HITs?</Text>
-                                <TouchableOpacity onPress={() => setSkillIsHitBased(!skillIsHitBased)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillIsHitBased ? '#ff4444' : 'transparent'}}>{skillIsHitBased && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
+                                <TouchableOpacity onPress={() => setSkillIsHitBased(!skillIsHitBased)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillIsHitBased ? '#ff4444' : 'transparent'}}>{!!skillIsHitBased && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
                             </View>
                             {skillIsHitBased && (
                                 <TextInput style={[styles.input, {borderColor:'#ff4444'}]} placeholder="Quantidade de Hits" placeholderTextColor="#555" value={skillHitValueInput} onChangeText={setSkillHitValueInput} keyboardType="numeric"/>
@@ -288,7 +485,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                             </View>
                             <View style={{flexDirection:'row', alignItems:'center', marginBottom:10, justifyContent:'center'}}>
                                 <Text style={{color:'#fff', marginRight:10, fontSize:12}}>Afeta toda a equipe? (Geral)</Text>
-                                <TouchableOpacity onPress={() => setIsSkillGeneral(!isSkillGeneral)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: isSkillGeneral ? '#FFD700' : 'transparent'}}>{isSkillGeneral && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
+                                <TouchableOpacity onPress={() => setIsSkillGeneral(!isSkillGeneral)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: isSkillGeneral ? '#FFD700' : 'transparent'}}>{!!isSkillGeneral && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
                             </View>
                         </View>
                     )}
@@ -296,7 +493,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     <View style={{flexDirection:'row', marginTop: 10}}>
                         <TouchableOpacity onPress={addSkillToTempList} style={[styles.saveButton, {flex: 1, marginTop:0, backgroundColor: editingSkillIndex !== null ? '#FFD700' : '#333', borderColor:'#555', borderWidth:1, marginRight: 5}]}>
                             <Text style={{color: editingSkillIndex !== null ? '#000' : '#fff', fontWeight:'bold'}}>
-                                {editingSkillIndex !== null ? "SALVAR ALTERAÇÃO" : (newCategory === 'equipe' ? "Aplicar a TODOS (Geral)" : "+ Adicionar na Lista")}
+                                {editingSkillIndex !== null ? "SALVAR ALTERAÇÃO" : "+ Adicionar na Lista"}
                             </Text>
                         </TouchableOpacity>
                         {editingSkillIndex !== null && (
@@ -345,7 +542,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                         )}
 
                         {skillType !== 'passive' && (<View><TextInput style={[styles.input, {marginBottom:10}]} placeholder="Custo" placeholderTextColor="#555" value={skillCost} onChangeText={setSkillCost}/><TextInput style={[styles.input, {marginBottom:10}]} placeholder="Duração (Vazio = Infinito)" placeholderTextColor="#555" value={skillDuration} onChangeText={setSkillDuration} keyboardType="numeric"/></View>)}
-                        <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}><Text style={{color:'#aaa', fontSize:12}}>Gera Escudo?</Text><TouchableOpacity onPress={() => setSkillGeneratesShield(!skillGeneratesShield)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillGeneratesShield ? '#FFD700' : 'transparent'}}>{skillGeneratesShield && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity></View>
+                        <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}><Text style={{color:'#aaa', fontSize:12}}>Gera Escudo?</Text><TouchableOpacity onPress={() => setSkillGeneratesShield(!skillGeneratesShield)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillGeneratesShield ? '#FFD700' : 'transparent'}}>{!!skillGeneratesShield && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity></View>
                         {skillGeneratesShield && (<TextInput style={[styles.input, {marginBottom:10}]} placeholder="Valor do Escudo" placeholderTextColor="#555" value={skillShieldValue} onChangeText={setSkillShieldValue} keyboardType="numeric"/>)}
                         <View style={{flexDirection:'row', justifyContent:'space-around', marginBottom:15}}><TouchableOpacity onPress={()=>setSkillType('active')} style={[styles.typeBadge, skillType==='active' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}><Text style={styles.typeText}>Ativa</Text></TouchableOpacity><TouchableOpacity onPress={()=>setSkillType('passive')} style={[styles.typeBadge, skillType==='passive' && {backgroundColor:'#8257e5', borderColor:'#8257e5'}]}><Text style={styles.typeText}>Passiva</Text></TouchableOpacity><TouchableOpacity onPress={()=>setSkillType('transformation')} style={[styles.typeBadge, skillType==='transformation' && {backgroundColor:'#FFD700', borderColor:'#FFD700'}]}><Text style={[styles.typeText, skillType==='transformation' && {color:'black'}]}>Transform</Text></TouchableOpacity></View>
                         
@@ -353,7 +550,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                             <View>
                                 <View style={{flexDirection:'row', alignItems:'center', marginBottom:10, justifyContent:'center'}}>
                                     <Text style={{color:'#fff', marginRight:10, fontSize:12}}>Vida vira HITs?</Text>
-                                    <TouchableOpacity onPress={() => setSkillIsHitBased(!skillIsHitBased)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillIsHitBased ? '#ff4444' : 'transparent'}}>{skillIsHitBased && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
+                                    <TouchableOpacity onPress={() => setSkillIsHitBased(!skillIsHitBased)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillIsHitBased ? '#ff4444' : 'transparent'}}>{!!skillIsHitBased && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
                                 </View>
                                 {skillIsHitBased && (
                                     <TextInput style={[styles.input, {borderColor:'#ff4444'}]} placeholder="Quantidade de Hits" placeholderTextColor="#555" value={skillHitValueInput} onChangeText={setSkillHitValueInput} keyboardType="numeric"/>
@@ -369,7 +566,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                                 </View>
                                 <View style={{flexDirection:'row', alignItems:'center', marginBottom:10, justifyContent:'center'}}>
                                     <Text style={{color:'#fff', marginRight:10, fontSize:12}}>Afeta toda a equipe? (Geral)</Text>
-                                    <TouchableOpacity onPress={() => setIsSkillGeneral(!isSkillGeneral)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: isSkillGeneral ? '#FFD700' : 'transparent'}}>{isSkillGeneral && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
+                                    <TouchableOpacity onPress={() => setIsSkillGeneral(!isSkillGeneral)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: isSkillGeneral ? '#FFD700' : 'transparent'}}>{!!isSkillGeneral && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
                                 </View>
                             </View>
                         )}
@@ -397,9 +594,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                                         <Text style={{color:'#fff', fontWeight:'bold'}}>{s.is_hit_based ? '[HIT] ' : ''}{s.unlock_level && s.unlock_level > 1 ? `[Lv ${s.unlock_level}] ` : ''}{s.name}</Text>
                                         <Text style={{color:'#777', fontSize:10}}>{s.description}</Text>
                                         {(s.type === 'passive' || s.type === 'active') && (
-                                            <View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSubtypeColor(s.type==='passive'?s.passive_type:s.active_type)}}>
-                                                <Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{getSubtypeLabel(s.type==='passive'?s.passive_type:s.active_type)}</Text>
-                                            </View>
+                                            <View style={{marginTop:4, alignSelf:'flex-start', paddingHorizontal:6, paddingVertical:2, borderRadius:4, backgroundColor: getSubtypeColor(s.type==='passive'?s.passive_type:s.active_type)}}><Text style={{fontSize:8, fontWeight:'bold', color:'#000'}}>{getSubtypeLabel(s.type==='passive'?s.passive_type:s.active_type)}</Text></View>
                                         )}
                                     </View>
                                     <View style={{flexDirection:'row'}}>
@@ -416,12 +611,120 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
         </View>
       </Modal>
 
-      {/* EVENT/EFFECT MODALS (MANTIDOS IGUAIS) */}
+      {/* PARTNER CREATION MODAL (NOVO) */}
+      <Modal transparent visible={partnerModalVisible} animationType="slide">
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+            <View style={[styles.modalContent, {maxHeight: '90%'}]}>
+                <Text style={styles.modalTitle}>{editingPartnerIndex !== null ? "Editar Parceiro" : "Novo Parceiro"}</Text>
+                <ScrollView contentContainerStyle={{paddingBottom: 20}}>
+                    <TextInput style={styles.input} placeholder="Nome do Parceiro" placeholderTextColor="#555" value={partnerName} onChangeText={setPartnerName}/>
+                    
+                    <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:15}}>
+                        <Text style={{color:'#fff'}}>Possui Vida?</Text>
+                        <TouchableOpacity onPress={() => setPartnerHasLife(!partnerHasLife)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: partnerHasLife ? '#00B37E' : 'transparent'}}>
+                            {!!partnerHasLife && <Ionicons name="checkmark" size={18} color="#fff" />}
+                        </TouchableOpacity>
+                    </View>
+
+                    {partnerHasLife && (
+                        <View style={{marginBottom:15}}>
+                            <View style={{flexDirection:'row', marginBottom:10}}>
+                                <TouchableOpacity onPress={()=>setPartnerLifeType('numeric')} style={[styles.typeBadge, partnerLifeType==='numeric' && {backgroundColor:'#00B37E'}]}><Text style={styles.typeText}>HP Numérico</Text></TouchableOpacity>
+                                <TouchableOpacity onPress={()=>setPartnerLifeType('hit')} style={[styles.typeBadge, partnerLifeType==='hit' && {backgroundColor:'#ff4444'}]}><Text style={styles.typeText}>HITs</Text></TouchableOpacity>
+                            </View>
+                            <TextInput style={styles.input} placeholder={partnerLifeType === 'hit' ? "Qtd Hits" : "Vida Máxima"} placeholderTextColor="#555" value={partnerHpInput} onChangeText={setPartnerHpInput} keyboardType="numeric"/>
+                        </View>
+                    )}
+
+                    {/* SISTEMA DE NÍVEL DO PARCEIRO */}
+                    <View style={{marginTop: 10, padding: 10, backgroundColor: '#2a2a20', borderRadius: 8, marginBottom: 15}}>
+                        <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                            <Text style={{color:'#fff', fontWeight:'bold'}}>Possui Sistema de Nível?</Text>
+                            <TouchableOpacity onPress={() => setPartnerHasLevelSystem(!partnerHasLevelSystem)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: partnerHasLevelSystem ? '#00B37E' : 'transparent'}}>
+                                {!!partnerHasLevelSystem && <Ionicons name="checkmark" size={18} color="#fff" />}
+                            </TouchableOpacity>
+                        </View>
+                        {partnerHasLevelSystem && (
+                            <TextInput style={[styles.input, {marginBottom: 0}]} placeholder="Nível Máximo" placeholderTextColor="#555" value={partnerMaxLevelsInput} onChangeText={setPartnerMaxLevelsInput} keyboardType="numeric"/>
+                        )}
+                    </View>
+
+                    <Text style={[styles.sectionHeader, {marginTop:10}]}>Habilidades do Parceiro</Text>
+                    <View style={[styles.skillForm, editingPartnerSkillIndex !== null && {borderWidth:1, borderColor:'#FFD700', backgroundColor:'#2a2a20'}]}>
+                        <Text style={{color:'#aaa', fontSize:12, marginBottom:5}}>{editingPartnerSkillIndex !== null ? "Editando Skill" : "Nova Skill"}</Text>
+                        <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Nome Skill" placeholderTextColor="#555" value={skillName} onChangeText={setSkillName}/>
+                        <TextInput style={[styles.input, {marginBottom:5}]} placeholder="Descrição" placeholderTextColor="#555" value={skillDesc} onChangeText={setSkillDesc}/>
+                        
+                        {partnerHasLevelSystem && (
+                            <TextInput 
+                                style={[styles.input, {marginBottom:5, borderColor: '#00B37E', borderWidth: 1}]} 
+                                placeholder="Desbloquear no Nível (Padrão: 1)" 
+                                placeholderTextColor="#555" 
+                                value={skillUnlockLevel} 
+                                onChangeText={setSkillUnlockLevel} 
+                                keyboardType="numeric"
+                            />
+                        )}
+
+                        {skillType !== 'passive' && (<TextInput style={[styles.input, {marginBottom:10}]} placeholder="Custo" placeholderTextColor="#555" value={skillCost} onChangeText={setSkillCost}/>)}
+                        {skillType !== 'passive' && (<TextInput style={[styles.input, {marginBottom:10}]} placeholder="Duração" placeholderTextColor="#555" value={skillDuration} onChangeText={setSkillDuration} keyboardType="numeric"/>)}
+                        
+                        <View style={{flexDirection:'row', justifyContent:'space-around', marginBottom:10}}>
+                            <TouchableOpacity onPress={()=>setSkillType('active')} style={[styles.typeBadge, skillType==='active' && {backgroundColor:'#00B37E'}]}><Text style={styles.typeText}>Ativa</Text></TouchableOpacity>
+                            <TouchableOpacity onPress={()=>setSkillType('passive')} style={[styles.typeBadge, skillType==='passive' && {backgroundColor:'#8257e5'}]}><Text style={styles.typeText}>Passiva</Text></TouchableOpacity>
+                            <TouchableOpacity onPress={()=>setSkillType('transformation')} style={[styles.typeBadge, skillType==='transformation' && {backgroundColor:'#FFD700'}]}><Text style={[styles.typeText, skillType==='transformation' && {color:'#fff'}]}>Transform</Text></TouchableOpacity>
+                        </View>
+                        
+                        {skillType === 'transformation' && (
+                            <View>
+                                <View style={{flexDirection:'row', alignItems:'center', marginBottom:10, justifyContent:'center'}}>
+                                    <Text style={{color:'#fff', marginRight:10, fontSize:12}}>Vida vira HITs?</Text>
+                                    <TouchableOpacity onPress={() => setSkillIsHitBased(!skillIsHitBased)} style={{width:20, height:20, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: skillIsHitBased ? '#ff4444' : 'transparent'}}>{!!skillIsHitBased && <Ionicons name="checkmark" size={14} color="#000" />}</TouchableOpacity>
+                                </View>
+                                {skillIsHitBased && (
+                                    <TextInput style={[styles.input, {borderColor:'#ff4444'}]} placeholder="Quantidade de Hits" placeholderTextColor="#555" value={skillHitValueInput} onChangeText={setSkillHitValueInput} keyboardType="numeric"/>
+                                )}
+                            </View>
+                        )}
+
+                        <TouchableOpacity onPress={addPartnerSkill} style={[styles.saveButton, {marginTop:0, backgroundColor: editingPartnerSkillIndex !== null ? '#FFD700' : '#333', borderWidth:1, borderColor:'#555'}]}>
+                            <Text style={{color: editingPartnerSkillIndex !== null ? '#000' : '#fff', fontWeight:'bold'}}>
+                                {editingPartnerSkillIndex !== null ? "Salvar Skill" : "+ Adicionar Skill"}
+                            </Text>
+                        </TouchableOpacity>
+                    </View>
+
+                    {partnerSkills.length > 0 && (
+                        <View style={{marginTop:10}}>
+                            {partnerSkills.map((s, idx) => (
+                                <View key={idx} style={{padding:8, backgroundColor:'#333', marginBottom:5, borderRadius:6, flexDirection:'row', justifyContent:'space-between'}}>
+                                    <View style={{flex:1}}>
+                                        <Text style={{color:'#fff', fontWeight:'bold'}}>{s.unlock_level && s.unlock_level > 1 ? `[Lv ${s.unlock_level}] ` : ''}{s.name}</Text>
+                                        <Text style={{color:'#aaa', fontSize:10}}>{s.type.toUpperCase()}</Text>
+                                    </View>
+                                    <View style={{flexDirection: 'row'}}>
+                                        <TouchableOpacity onPress={() => handleEditPartnerSkill(idx)} style={{marginRight:10}}><Ionicons name="pencil" size={16} color="#FFD700" /></TouchableOpacity>
+                                        <TouchableOpacity onPress={() => removePartnerSkill(idx)}><Ionicons name="trash" size={16} color="#ff4444" /></TouchableOpacity>
+                                    </View>
+                                </View>
+                            ))}
+                        </View>
+                    )}
+                </ScrollView>
+                <View style={{marginTop: 10, paddingBottom: 10}}>
+                    <TouchableOpacity onPress={savePartner} style={styles.saveButton}><Text style={styles.saveButtonText}>{editingPartnerIndex !== null ? "ATUALIZAR PARCEIRO" : "CRIAR PARCEIRO"}</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={()=>setPartnerModalVisible(false)} style={[styles.saveButton, {backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity>
+                </View>
+            </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* EVENT/EFFECT MODALS */}
       <Modal transparent visible={manageEventsModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Eventos</Text><TouchableOpacity onPress={openCreateEventModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity><TouchableOpacity onPress={()=>setManageEventsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity></View><FlatList data={catalogEvents} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={styles.catalogName}>{item.title}</Text></View><TouchableOpacity onPress={()=>openEditEventModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEvent(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/></View></View></Modal>
       <Modal transparent visible={createEventModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><Text style={styles.modalTitle}>Criar Evento</Text><TextInput style={styles.input} placeholder="Título" placeholderTextColor="#555" value={newEventTitle} onChangeText={setNewEventTitle}/><TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={newEventDesc} onChangeText={setNewEventDesc}/><TextInput style={styles.input} placeholder="URL Imagem" placeholderTextColor="#555" value={newEventImage} onChangeText={setNewEventImage}/><TouchableOpacity onPress={handleSaveEvent} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity><TouchableOpacity onPress={()=>setCreateEventModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity></View></View></Modal>
       <Modal transparent visible={manageEffectsModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Buffs & Debuffs</Text><TouchableOpacity onPress={openCreateEffectModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity><TouchableOpacity onPress={()=>setManageEffectsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity></View><FlatList data={catalogEffects} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={[styles.catalogName, {color: item.type==='buff'?'#00B37E':'#ff4444'}]}>{item.title}</Text><Text style={styles.catalogOrigin}>{item.type.toUpperCase()}{item.duration ? ` • ${item.duration} Rnds` : ''}</Text></View><TouchableOpacity onPress={()=>openEditEffectModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEffect(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/></View></View></Modal>
       <Modal transparent visible={createEffectModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><Text style={styles.modalTitle}>{editingEffectId ? "Editar Efeito" : "Criar Efeito"}</Text><View style={{flexDirection:'row', marginBottom:15}}><TouchableOpacity onPress={()=>setEffectType('buff')} style={[styles.typeBadge, effectType==='buff' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}><Text style={styles.typeText}>BUFF (Bom)</Text></TouchableOpacity><TouchableOpacity onPress={()=>setEffectType('debuff')} style={[styles.typeBadge, effectType==='debuff' && {backgroundColor:'#ff4444', borderColor:'#ff4444'}]}><Text style={styles.typeText}>DEBUFF (Ruim)</Text></TouchableOpacity></View><TextInput style={styles.input} placeholder="Título (Ex: Veneno)" placeholderTextColor="#555" value={effectTitle} onChangeText={setEffectTitle}/><TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={effectDesc} onChangeText={setEffectDesc}/><TextInput style={styles.input} placeholder="Duração" placeholderTextColor="#555" value={effectDuration} onChangeText={setEffectDuration} keyboardType="numeric"/>{effectType === 'debuff' && (<TextInput style={[styles.input, {borderColor:'#ff4444'}]} placeholder="Dano (Ex: 10)" placeholderTextColor="#555" value={effectDamage} onChangeText={setEffectDamage}/>)}<TouchableOpacity onPress={handleSaveEffect} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity><TouchableOpacity onPress={()=>setCreateEffectModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity></View></View></Modal>
-      <Modal animationType="fade" transparent={true} visible={detailsModalVisible} onRequestClose={() => setDetailsModalVisible(false)}><View style={styles.modalOverlay}><View style={[styles.modalContent, { height: '65%' }]}>{selectedCharacter ? (<View style={{alignItems: 'center'}}>{selectedCharacter.game_characters?.image_url ? <Image source={{uri: selectedCharacter.game_characters.image_url}} style={styles.detailsImageBig} /> : <View style={styles.detailsIconBig}><Text style={{fontSize: 40}}>👤</Text></View>}<Text style={styles.detailsTitle}>{selectedCharacter.game_characters?.name || 'Desconhecido'}</Text><Text style={styles.detailsClass}>{selectedCharacter.game_characters?.base_class}</Text><Text style={[styles.detailsClass, {color: getCategoryColor(selectedCharacter.game_characters?.category), marginTop:5}]}>{selectedCharacter.game_characters?.category?.toUpperCase() || 'INDIVIDUAL'}</Text><View style={styles.levelBigBadge}><Text style={styles.levelLabel}>HP BASE: {selectedCharacter.game_characters?.base_hp}</Text>{(selectedCharacter.game_characters?.base_shield || 0) > 0 && <Text style={[styles.levelLabel, {color:'#44aaff', marginTop:5}]}>ESCUDO: {selectedCharacter.game_characters?.base_shield}</Text>}</View><View style={styles.statsRow}><View style={styles.statBox}><Ionicons name="trophy" size={24} color="#FFD700" /><Text style={styles.statValue}>{selectedCharStats.wins}</Text><Text style={styles.statLabel}>Vitórias (Lv)</Text></View><View style={styles.statBox}><Ionicons name="game-controller" size={24} color="#ccc" /><Text style={styles.statValue}>{selectedCharStats.matches}</Text><Text style={styles.statLabel}>Partidas</Text></View><View style={styles.statBox}><Ionicons name="pie-chart" size={24} color="#8257e5" /><Text style={styles.statValue}>{selectedCharStats.winRate}%</Text><Text style={styles.statLabel}>Taxa</Text></View></View><View style={{flexDirection:'row', alignItems:'center', marginTop:20, backgroundColor:'#222', padding:10, borderRadius:8, width:'100%'}}><Text style={{color:'#fff', flex:1, fontSize:14, marginRight:10}}>Desafio do Personagem Concluído?</Text><TouchableOpacity onPress={() => handleToggleChallenge(selectedCharacter)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: selectedCharacter.challenge_completed ? '#00B37E' : 'transparent'}}>{selectedCharacter.challenge_completed && <Ionicons name="checkmark" size={18} color="#fff" />}</TouchableOpacity></View>{loadingStats && <ActivityIndicator size="small" color="#8257e5" style={{marginTop:10}}/>}<TouchableOpacity style={styles.closeButton} onPress={() => setDetailsModalVisible(false)}><Text style={styles.closeButtonText}>Fechar</Text></TouchableOpacity></View>) : <ActivityIndicator size="large" color="#8257e5"/>}</View></View></Modal>
+      <Modal animationType="fade" transparent={true} visible={detailsModalVisible} onRequestClose={() => setDetailsModalVisible(false)}><View style={styles.modalOverlay}><View style={[styles.modalContent, { height: '65%' }]}>{selectedCharacter ? (<View style={{alignItems: 'center'}}>{selectedCharacter.game_characters?.image_url ? <Image source={{uri: selectedCharacter.game_characters.image_url}} style={styles.detailsImageBig} /> : <View style={styles.detailsIconBig}><Text style={{fontSize: 40}}>👤</Text></View>}<Text style={styles.detailsTitle}>{selectedCharacter.game_characters?.name || 'Desconhecido'}</Text><Text style={styles.detailsClass}>{selectedCharacter.game_characters?.base_class}</Text><Text style={[styles.detailsClass, {color: getCategoryColor(selectedCharacter.game_characters?.category), marginTop:5}]}>{selectedCharacter.game_characters?.category?.toUpperCase() || 'INDIVIDUAL'}</Text><View style={styles.levelBigBadge}><Text style={styles.levelLabel}>HP BASE: {selectedCharacter.game_characters?.base_hp}</Text>{(selectedCharacter.game_characters?.base_shield || 0) > 0 && <Text style={[styles.levelLabel, {color:'#44aaff', marginTop:5}]}>ESCUDO: {selectedCharacter.game_characters?.base_shield}</Text>}</View><View style={styles.statsRow}><View style={styles.statBox}><Ionicons name="trophy" size={24} color="#FFD700" /><Text style={styles.statValue}>{selectedCharStats.wins}</Text><Text style={styles.statLabel}>Vitórias (Lv)</Text></View><View style={styles.statBox}><Ionicons name="game-controller" size={24} color="#ccc" /><Text style={styles.statValue}>{selectedCharStats.matches}</Text><Text style={styles.statLabel}>Partidas</Text></View><View style={styles.statBox}><Ionicons name="pie-chart" size={24} color="#8257e5" /><Text style={styles.statValue}>{selectedCharStats.winRate}%</Text><Text style={styles.statLabel}>Taxa</Text></View></View><View style={{flexDirection:'row', alignItems:'center', marginTop:20, backgroundColor:'#222', padding:10, borderRadius:8, width:'100%'}}><Text style={{color:'#fff', flex:1, fontSize:14, marginRight:10}}>Desafio do Personagem Concluído?</Text><TouchableOpacity onPress={() => handleToggleChallenge(selectedCharacter)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: selectedCharacter.challenge_completed ? '#00B37E' : 'transparent'}}>{!!selectedCharacter.challenge_completed && <Ionicons name="checkmark" size={18} color="#fff" />}</TouchableOpacity></View>{!!loadingStats && <ActivityIndicator size="small" color="#8257e5" style={{marginTop:10}}/>}<TouchableOpacity style={styles.closeButton} onPress={() => setDetailsModalVisible(false)}><Text style={styles.closeButtonText}>Fechar</Text></TouchableOpacity></View>) : <ActivityIndicator size="large" color="#8257e5"/>}</View></View></Modal>
     </View>
   );
 }
