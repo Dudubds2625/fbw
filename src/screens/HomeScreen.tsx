@@ -1,11 +1,10 @@
-// src/screens/HomeScreen.tsx
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, ScrollView, 
   RefreshControl, Alert, Modal, FlatList, TextInput, Image, KeyboardAvoidingView, Platform, ActivityIndicator 
 } from 'react-native';
 import { supabase } from '../lib/supabase';
-import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, MatchHistoryItem, EventCharacter, BossSkill } from '../types/rpg';
+import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, MatchHistoryItem, BossSkill, EventCharacter } from '../types/rpg';
 import { Ionicons } from '@expo/vector-icons'; 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker'; 
@@ -16,7 +15,7 @@ interface HomeScreenProps {
   onStartGame: (roomCode: string) => void;
 }
 
-// Interfaces Locais
+// --- INTERFACES LOCAIS ---
 interface BossSkillLocal {
     name: string;
     description: string;
@@ -70,6 +69,10 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [joinCode, setJoinCode] = useState(''); 
   const roomChannelRef = useRef<RealtimeChannel | null>(null);
   
+  // --- NOVO: SELEÇÃO DE EVENTO NO LOBBY ---
+  const [eventSelectionMode, setEventSelectionMode] = useState<'random' | 'manual'>('random');
+  const [lobbySelectedEventId, setLobbySelectedEventId] = useState<string | null>(null);
+
   // Visibilidade dos Modais
   const [createCharModalVisible, setCreateCharModalVisible] = useState(false);
   const [manageEventsModalVisible, setManageEventsModalVisible] = useState(false);
@@ -80,11 +83,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [selectedCharacter, setSelectedCharacter] = useState<UserRosterItem | null>(null);
   const [memberSkillsModalVisible, setMemberSkillsModalVisible] = useState(false);
   
-  // ==================================================================================
-  // 2. STATES DE CRIAÇÃO (PERSONAGEM / PARCEIROS / SKILLS)
-  // ==================================================================================
-  
-  // Char Principal
+  // Char Creation Form
   const [editingCharId, setEditingCharId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newOrigin, setNewOrigin] = useState('');
@@ -102,7 +101,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Equipe
+  // Team Form
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [currentMemberIndex, setCurrentMemberIndex] = useState<number | null>(null);
   const [memberName, setMemberName] = useState('');
@@ -177,7 +176,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [bossSkillTarget, setBossSkillTarget] = useState<'players_global' | 'self'>('players_global');
   const [editingBossSkillIndex, setEditingBossSkillIndex] = useState<number | null>(null);
   
-  // Dados do Evento Antigo (para compatibilidade com código legacy, se houver)
+  // Dados do Evento Antigo
   const [newEventEnemyName, setNewEventEnemyName] = useState('');
   const [newEventEnemyHp, setNewEventEnemyHp] = useState('');
   const [newEventHasLife, setNewEventHasLife] = useState(true);
@@ -213,6 +212,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const fetchData = useCallback(async () => { try { setLoading(true); const { data: { user } } = await supabase.auth.getUser(); if (user) { setUserEmail(user.email || ''); setUserId(user.id); const { data: profile } = await supabase.from('profiles').select('username').eq('id', user.id).single(); setUsername(profile?.username || user.email?.split('@')[0] || 'Viajante'); const { data: roster, error } = await supabase.from('user_roster').select(`id, current_level, acquired_at, challenge_completed, game_characters (*)`).eq('user_id', user.id).order('acquired_at', { ascending: false }); if (error) console.log("Erro roster:", error.message); else setPlayedCharacters(roster as any || []); } const { data: vict } = await supabase.from('victories').select('*'); setVictories(vict || []); await fetchCatalogs(); } catch (error: any) { console.log(error); } finally { setLoading(false); setRefreshing(false); } }, []);
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (lobbyModalVisible) fetchCatalogs(); }, [lobbyModalVisible]);
+
   const fetchHistory = async () => { setLoading(true); const { data } = await supabase.from('match_history').select('*').order('played_at', { ascending: false }).limit(10); if (data) setMatchHistory(data); setLoading(false); setHistoryModalVisible(true); };
   
   const uploadToSupabase = async (uri: string): Promise<string | null> => { try { setUploadingImage(true); const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }); const arrayBuffer = decode(base64); const fileExt = uri.split('.').pop()?.toLowerCase() ?? 'jpg'; const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`; const filePath = `${fileName}`; const { error: uploadError } = await supabase.storage.from('rpg-images').upload(filePath, arrayBuffer, { contentType: `image/${fileExt === 'jpg' ? 'jpeg' : fileExt}`, upsert: false }); if (uploadError) throw uploadError; const { data } = supabase.storage.from('rpg-images').getPublicUrl(filePath); return data.publicUrl; } catch (error: any) { Alert.alert("Erro no upload", error.message || "Erro desconhecido"); return null; } finally { setUploadingImage(false); } };
@@ -221,7 +221,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const pickEventImage = async () => { const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [16, 9], quality: 0.5, }); if (!result.canceled) { setPickedEventImageUri(result.assets[0].uri); } };
 
   // ==================================================================================
-  // 6. LÓGICA DE EVENTOS (CORRIGIDA)
+  // 6. LÓGICA DE EVENTOS
   // ==================================================================================
   
   const openCreateEventModal = () => { 
@@ -335,7 +335,10 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
               title: newEventTitle, description: newEventDesc, image_url: finalImageUrl||null, 
               event_characters: eventCharacters 
           }; 
-          if(editingEventId) await supabase.from('game_events').update(p).eq('id',editingEventId); else await supabase.from('game_events').insert(p); 
+          
+          if(editingEventId) await supabase.from('game_events').update(p).eq('id',editingEventId); 
+          else await supabase.from('game_events').insert(p); 
+          
           setCreateEventModalVisible(false); fetchCatalogs(); 
       } catch (e: any) { Alert.alert("Erro", e.message); } finally { setSaving(false); }
   };
@@ -366,7 +369,34 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const handleJoinRoom = async () => { const code = joinCode.toUpperCase(); if (code.length !== 4) return Alert.alert('Erro', 'Código inválido'); const { data: room, error } = await supabase.from('rooms').select('*').eq('code', code).single(); if (error || !room) return Alert.alert('Erro', 'Sala não encontrada'); const { error: joinError } = await supabase.from('room_participants').insert({ room_code: code, user_id: userId, user_email: userEmail, username }); if (joinError && joinError.code !== '23505') return Alert.alert('Erro ao entrar', joinError.message); setCurrentRoom(room); fetchParticipants(code); subscribeToRoom(code); setLobbyModalVisible(true); };
   const handleStartSelection = async () => { if (!currentRoom) return; await supabase.from('rooms').update({ status: 'selecting' }).eq('code', currentRoom.code); };
   const handleSelectCharacter = async (charId: string) => { if (!currentRoom) return; await supabase.from('room_participants').update({ selected_character_id: charId, is_ready: true }).eq('room_code', currentRoom.code).eq('user_id', userId); const existing = playedCharacters.find(p => p.game_characters && p.game_characters.id === charId); if (!existing) { await supabase.from('user_roster').insert({ user_id: userId, character_id: charId, current_level: 1 }); fetchData(); } };
-  const handleStartGame = async () => { if (!currentRoom) return; let availableEvents = catalogEvents; if (availableEvents.length === 0) { const { data } = await supabase.from('game_events').select('*'); if (data && data.length > 0) { availableEvents = data; setCatalogEvents(data); } else { return Alert.alert('Erro', 'Crie um evento antes de iniciar.'); } } const everyoneReady = participants.every(p => p.is_ready); if (!everyoneReady) return Alert.alert('Aguarde', 'Jogadores escolhendo...'); setSaving(true); try { const randomEvent = availableEvents[Math.floor(Math.random() * availableEvents.length)]; const shuffled = [...participants].sort(() => Math.random() - 0.5); for (let i = 0; i < shuffled.length; i++) { const selectedCharId = shuffled[i].selected_character_id; const charData = catalogChars.find(c => c.id === selectedCharId); let initialHp = 10; let initialShield = charData?.base_shield || 0; let initialTeamState: any[] = []; if (charData?.category === 'equipe') { initialHp = 0; initialTeamState = []; } else { initialHp = charData?.base_hp || 10; } await supabase.from('room_participants').update({ turn_order: i + 1, current_hp: initialHp, max_hp: initialHp, current_shield: initialShield, buffs: '', debuffs: '', active_transformations: [], team_state: initialTeamState, active_member_name: null }).eq('id', shuffled[i].id); } await supabase.from('rooms').update({ status: 'playing', selected_event_id: randomEvent.id, current_turn_participant_id: shuffled[0].id }).eq('code', currentRoom.code); } catch (error: any) { Alert.alert('Erro', error.message); } finally { setSaving(false); } };
+  const handleStartGame = async () => { if (!currentRoom) return; 
+    let finalEventId = '';
+    // LÓGICA DE SELEÇÃO DE EVENTO (ALEATÓRIO OU MANUAL)
+    if (eventSelectionMode === 'random') {
+       let availableEvents = catalogEvents; 
+       if (availableEvents.length === 0) { const { data } = await supabase.from('game_events').select('*'); if (data && data.length > 0) availableEvents = data; else return Alert.alert('Erro', 'Nenhum evento disponível.'); } 
+       const randomEvent = availableEvents[Math.floor(Math.random() * availableEvents.length)];
+       finalEventId = randomEvent.id;
+    } else {
+       if (!lobbySelectedEventId) return Alert.alert("Atenção", "Selecione um evento da lista!");
+       finalEventId = lobbySelectedEventId;
+    }
+
+    const everyoneReady = participants.every(p => p.is_ready); 
+    if (!everyoneReady) return Alert.alert('Aguarde', 'Jogadores escolhendo...'); 
+    setSaving(true); 
+    try { 
+        const shuffled = [...participants].sort(() => Math.random() - 0.5); 
+        for (let i = 0; i < shuffled.length; i++) { 
+            const selectedCharId = shuffled[i].selected_character_id; 
+            const charData = catalogChars.find(c => c.id === selectedCharId); 
+            let initialHp = 10; let initialShield = charData?.base_shield || 0; let initialTeamState: any[] = []; 
+            if (charData?.category === 'equipe') { initialHp = 0; initialTeamState = []; } else { initialHp = charData?.base_hp || 10; } 
+            await supabase.from('room_participants').update({ turn_order: i + 1, current_hp: initialHp, max_hp: initialHp, current_shield: initialShield, buffs: '', debuffs: '', active_transformations: [], team_state: initialTeamState, active_member_name: null }).eq('id', shuffled[i].id); 
+        } 
+        await supabase.from('rooms').update({ status: 'playing', selected_event_id: finalEventId, current_turn_participant_id: shuffled[0].id }).eq('code', currentRoom.code); 
+    } catch (error: any) { Alert.alert('Erro', error.message); } finally { setSaving(false); } 
+  };
   const handleLeaveRoom = async () => { if (currentRoom) { if (roomChannelRef.current) supabase.removeChannel(roomChannelRef.current); await supabase.from('room_participants').delete().eq('room_code', currentRoom.code).eq('user_id', userId); } setLobbyModalVisible(false); setCurrentRoom(null); setParticipants([]); };
   const handleToggleChallenge = async (item: UserRosterItem) => { const newValue = !item.challenge_completed; setPlayedCharacters(prev => prev.map(p => p.id === item.id ? { ...p, challenge_completed: newValue } : p)); if (selectedCharacter && selectedCharacter.id === item.id) { setSelectedCharacter({ ...selectedCharacter, challenge_completed: newValue }); } await supabase.from('user_roster').update({ challenge_completed: newValue }).eq('id', item.id); };
   const handleOpenDetails = async (item: UserRosterItem) => { if (!item.game_characters) return; setSelectedCharacter(item); setLoadingStats(true); setDetailsModalVisible(true); const { count: winsCount } = await supabase.from('victories').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('character_name', item.game_characters.name); const charWins = winsCount || 0; const { data: allHistory } = await supabase.from('match_history').select('participants_snapshot'); let charMatches = 0; if (allHistory) { allHistory.forEach(match => { const played = match.participants_snapshot.some((p: any) => p.user_id === userId && p.selected_character_id === item.game_characters?.id); if (played) charMatches++; }); } if (charMatches < charWins) charMatches = charWins; const rate = charMatches > 0 ? Math.round((charWins / charMatches) * 100) : 0; setSelectedCharStats({ wins: charWins, matches: charMatches, winRate: rate, missions: 0 }); setLoadingStats(false); };
@@ -425,7 +455,45 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       </ScrollView>
 
       {/* LOBBY */}
-      <Modal animationType="slide" transparent={false} visible={lobbyModalVisible} onRequestClose={()=>{}}><View style={styles.lobbyContainer}><View style={styles.lobbyHeader}><Text style={styles.lobbyTitle}>Sala: {currentRoom?.code}</Text><TouchableOpacity onPress={handleLeaveRoom}><Ionicons name="close-circle" size={32} color="#ff4444" /></TouchableOpacity></View>{currentRoom?.status === 'waiting' && (<View style={{flex: 1, justifyContent:'center', alignItems:'center'}}><Text style={styles.phaseTitle}>Aguardando...</Text><View style={styles.participantsList}>{participants.map(p => (<View key={p.id} style={styles.participantRow}><Ionicons name="person" size={20} color="#fff" /><Text style={styles.participantName}>{p.username}</Text>{!!(p.user_id === currentRoom.host_id) && <Text style={{color:'#FFD700', marginLeft:5}}>👑</Text>}</View>))}</View>{userId === currentRoom.host_id ? (<TouchableOpacity style={styles.actionButton} onPress={handleStartSelection}><Text style={styles.actionButtonText}>INICIAR SELEÇÃO</Text></TouchableOpacity>) : (<Text style={{color:'#777'}}>Aguardando Host...</Text>)}</View>)}{currentRoom?.status === 'selecting' && (<View style={{flex: 1}}><Text style={styles.phaseTitle}>Escolha seu Herói</Text><Text style={{color:'#ccc', textAlign:'center', marginBottom:10}}>{participants.filter(p => p.is_ready).length} / {participants.length} prontos</Text>{participants.find(p => p.user_id === userId)?.is_ready ? (<View style={{flex:1, justifyContent:'center', alignItems:'center'}}><Ionicons name="checkmark-circle" size={64} color="#00B37E" /><Text style={{color:'#fff', marginTop:10}}>Selecionado!</Text>{userId === currentRoom.host_id && participants.every(p => p.is_ready) && (<TouchableOpacity style={[styles.actionButton, {marginTop:30, backgroundColor:'#FFD700'}]} onPress={handleStartGame} disabled={saving}><Text style={[styles.actionButtonText, {color:'#000'}]}>INICIAR PARTIDA</Text></TouchableOpacity>)}</View>) : (<FlatList data={catalogChars} keyExtractor={item => item.id} renderItem={({item}) => (<View style={styles.catalogItem}><TouchableOpacity style={{flex: 1, flexDirection:'row', alignItems:'center'}} onPress={() => handleSelectCharacter(item.id)}>{item.image_url ? <Image source={{uri: item.image_url}} style={styles.catalogImage} /> : <View style={styles.catalogImage} /> }<View style={styles.catalogInfo}><Text style={styles.catalogName}>{item.name} (HP: {item.base_hp})</Text><View style={{flexDirection:'row'}}><Text style={styles.catalogOrigin}>{item.base_class}</Text><Text style={[styles.catalogOrigin, {marginLeft: 10, color: getCategoryColor(item.category), fontWeight:'bold'}]}>• {item.category?.toUpperCase() || 'INDIVIDUAL'}</Text></View></View><Ionicons name="arrow-forward-circle" size={32} color="#8257e5" /></TouchableOpacity><View style={{flexDirection:'row', marginLeft: 10}}><TouchableOpacity onPress={() => openEditCharModal(item)} style={{padding:5}}><Ionicons name="pencil" size={20} color="#8257e5" /></TouchableOpacity><TouchableOpacity onPress={() => handleDeleteChar(item.id)} style={{padding:5}}><Ionicons name="trash" size={20} color="#ff4444" /></TouchableOpacity></View></View>)}/>)}</View>)}</View></Modal>
+      <Modal animationType="slide" transparent={false} visible={lobbyModalVisible} onRequestClose={()=>{}}><View style={styles.lobbyContainer}><View style={styles.lobbyHeader}><Text style={styles.lobbyTitle}>Sala: {currentRoom?.code}</Text><TouchableOpacity onPress={handleLeaveRoom}><Ionicons name="close-circle" size={32} color="#ff4444" /></TouchableOpacity></View>{currentRoom?.status === 'waiting' && (<View style={{flex: 1, justifyContent:'center', alignItems:'center'}}><Text style={styles.phaseTitle}>Aguardando...</Text><View style={styles.participantsList}>{participants.map(p => (<View key={p.id} style={styles.participantRow}><Ionicons name="person" size={20} color="#fff" /><Text style={styles.participantName}>{p.username}</Text>{!!(p.user_id === currentRoom.host_id) && <Text style={{color:'#FFD700', marginLeft:5}}>👑</Text>}</View>))}</View>
+      
+      {/* SELEÇÃO DE MODO DE EVENTO (SÓ PARA O HOST) */}
+      {userId === currentRoom.host_id ? (
+          <View style={{width: '100%', paddingHorizontal: 10}}>
+              <Text style={{color:'#aaa', marginBottom:10, textAlign:'center'}}>Selecione o Modo de Evento:</Text>
+              <View style={{flexDirection:'row', justifyContent:'center', marginBottom:20}}>
+                  <TouchableOpacity onPress={() => setEventSelectionMode('random')} style={[styles.typeBadge, eventSelectionMode === 'random' && {backgroundColor:'#8257e5', borderColor:'#8257e5'}]}>
+                      <Text style={styles.typeText}>ALEATÓRIO</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setEventSelectionMode('manual')} style={[styles.typeBadge, eventSelectionMode === 'manual' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}>
+                      <Text style={styles.typeText}>MANUAL</Text>
+                  </TouchableOpacity>
+              </View>
+
+              {eventSelectionMode === 'manual' && (
+                  <View style={{height: 150, backgroundColor:'#222', borderRadius:8, padding:5, marginBottom:20}}>
+                      <FlatList 
+                          data={catalogEvents}
+                          keyExtractor={item => item.id}
+                          renderItem={({item}) => (
+                              <TouchableOpacity 
+                                  style={{padding:10, borderBottomWidth:1, borderBottomColor:'#333', backgroundColor: lobbySelectedEventId === item.id ? '#333' : 'transparent'}}
+                                  onPress={() => setLobbySelectedEventId(item.id)}
+                              >
+                                  <Text style={{color: lobbySelectedEventId === item.id ? '#00B37E' : '#fff', fontWeight: lobbySelectedEventId === item.id ? 'bold' : 'normal'}}>
+                                      {item.title}
+                                  </Text>
+                              </TouchableOpacity>
+                          )}
+                      />
+                  </View>
+              )}
+
+              <TouchableOpacity style={styles.actionButton} onPress={handleStartSelection}><Text style={styles.actionButtonText}>INICIAR SELEÇÃO</Text></TouchableOpacity>
+          </View>
+      ) : (<Text style={{color:'#777'}}>Aguardando Host...</Text>)}
+      
+      </View>)}{currentRoom?.status === 'selecting' && (<View style={{flex: 1}}><Text style={styles.phaseTitle}>Escolha seu Herói</Text><Text style={{color:'#ccc', textAlign:'center', marginBottom:10}}>{participants.filter(p => p.is_ready).length} / {participants.length} prontos</Text>{participants.find(p => p.user_id === userId)?.is_ready ? (<View style={{flex:1, justifyContent:'center', alignItems:'center'}}><Ionicons name="checkmark-circle" size={64} color="#00B37E" /><Text style={{color:'#fff', marginTop:10}}>Selecionado!</Text>{userId === currentRoom.host_id && participants.every(p => p.is_ready) && (<TouchableOpacity style={[styles.actionButton, {marginTop:30, backgroundColor:'#FFD700'}]} onPress={handleStartGame} disabled={saving}><Text style={[styles.actionButtonText, {color:'#000'}]}>INICIAR PARTIDA</Text></TouchableOpacity>)}</View>) : (<FlatList data={catalogChars} keyExtractor={item => item.id} renderItem={({item}) => (<View style={styles.catalogItem}><TouchableOpacity style={{flex: 1, flexDirection:'row', alignItems:'center'}} onPress={() => handleSelectCharacter(item.id)}>{item.image_url ? <Image source={{uri: item.image_url}} style={styles.catalogImage} /> : <View style={styles.catalogImage} /> }<View style={styles.catalogInfo}><Text style={styles.catalogName}>{item.name} (HP: {item.base_hp})</Text><View style={{flexDirection:'row'}}><Text style={styles.catalogOrigin}>{item.base_class}</Text><Text style={[styles.catalogOrigin, {marginLeft: 10, color: getCategoryColor(item.category), fontWeight:'bold'}]}>• {item.category?.toUpperCase() || 'INDIVIDUAL'}</Text></View></View><Ionicons name="arrow-forward-circle" size={32} color="#8257e5" /></TouchableOpacity><View style={{flexDirection:'row', marginLeft: 10}}><TouchableOpacity onPress={() => openEditCharModal(item)} style={{padding:5}}><Ionicons name="pencil" size={20} color="#8257e5" /></TouchableOpacity><TouchableOpacity onPress={() => handleDeleteChar(item.id)} style={{padding:5}}><Ionicons name="trash" size={20} color="#ff4444" /></TouchableOpacity></View></View>)}/>)}</View>)}</View></Modal>
       
       {/* CREATE CHAR MODAL */}
       <Modal transparent visible={createCharModalVisible} animationType="slide">
