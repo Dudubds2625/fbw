@@ -88,9 +88,9 @@ export interface GameEvent {
   
   // ADICIONADO:
   event_characters?: EventCharacter[];
-  // enemy_name?: string;
-  // base_hp?: number;
-  // boss_skills?: BossSkill[];
+  enemy_name?: string;
+  base_hp?: number;
+  boss_skills?: BossSkill[];
   // has_life?: boolean;
   // is_boss?: boolean;
   
@@ -113,17 +113,18 @@ export interface Room {
   current_turn_participant_id?: string;
   turn_phase?: 'initial' | 'main' | 'end';
   selected_event_id?: string;
+  event_state?: any; // Pode tipar como EventState se mover a interface para cá, ou manter any por compatibilidade
   
   // ADICIONADO:
-  event_state?: {
-      current_hp: number;
-      max_hp: number;
-      name: string;
-      image_url?: string;
-      boss_skills?: BossSkill[];
-      has_life?: boolean;
-      is_boss?: boolean;
-  };
+  // event_state?: {
+  //     current_hp: number;
+  //     max_hp: number;
+  //     name: string;
+  //     image_url?: string;
+  //     boss_skills?: BossSkill[];
+  //     has_life?: boolean;
+  //     is_boss?: boolean;
+  // };
   
 }
 
