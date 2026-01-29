@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { 
     View, Text, StyleSheet, Image, ScrollView, TouchableOpacity, 
-    TextInput, Alert, Modal, FlatList 
+    TextInput, Alert, Modal, FlatList, KeyboardAvoidingView, Platform 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-// Importação corrigida com BossSkill
 import { GameEvent, BossSkill, RoomParticipant, GameCharacter } from '../types/rpg';
 
 export interface EventMinion {
@@ -49,11 +48,17 @@ export default function EventPanel({
     const [bossTargetId, setBossTargetId] = useState<string | null>(null);
     const [summonModalVisible, setSummonModalVisible] = useState(false);
 
+    // --- NOVOS STATES PARA EDIÇÃO ---
+    const [editMinionModalVisible, setEditMinionModalVisible] = useState(false);
+    const [editingMinionIndex, setEditingMinionIndex] = useState<number | null>(null);
+    const [editMinionName, setEditMinionName] = useState('');
+    const [editMinionCurHp, setEditMinionCurHp] = useState('');
+    const [editMinionMaxHp, setEditMinionMaxHp] = useState('');
+
     // Fallbacks de Dados
     const displayTitle = eventState?.name || gameEvent?.title || "Evento";
     const displayImage = eventState?.image_url || gameEvent?.image_url;
     
-    // Lógica segura para Skills
     const skills = (eventState?.boss_skills && eventState.boss_skills.length > 0)
         ? eventState.boss_skills 
         : (gameEvent?.boss_skills || []);
@@ -89,6 +94,43 @@ export default function EventPanel({
             minions: [...currentMinions, newMinion] 
         });
         setSummonModalVisible(false);
+    };
+
+    // --- FUNÇÕES DE EDIÇÃO DO MINION ---
+    const openEditMinion = (index: number) => {
+        const m = eventState?.minions?.[index];
+        if (!m) return;
+        setEditingMinionIndex(index);
+        setEditMinionName(m.name);
+        setEditMinionCurHp(String(m.current_hp));
+        setEditMinionMaxHp(String(m.max_hp));
+        setEditMinionModalVisible(true);
+    };
+
+    const saveMinionEdit = () => {
+        if (editingMinionIndex === null || !eventState?.minions) return;
+        
+        const newMinions = [...eventState.minions];
+        const updatedMinion = { ...newMinions[editingMinionIndex] };
+
+        const newCur = parseInt(editMinionCurHp);
+        const newMax = parseInt(editMinionMaxHp);
+
+        if (!editMinionName) return Alert.alert("Erro", "Nome obrigatório");
+        if (isNaN(newCur) || isNaN(newMax)) return Alert.alert("Erro", "HP deve ser numérico");
+
+        updatedMinion.name = editMinionName;
+        updatedMinion.current_hp = Math.max(0, newCur);
+        updatedMinion.max_hp = Math.max(1, newMax);
+
+        // Garante que o HP atual não passe do máximo (opcional, mas recomendado)
+        if (updatedMinion.current_hp > updatedMinion.max_hp) {
+            updatedMinion.current_hp = updatedMinion.max_hp;
+        }
+
+        newMinions[editingMinionIndex] = updatedMinion;
+        onUpdateEventState({ ...eventState, minions: newMinions });
+        setEditMinionModalVisible(false);
     };
 
     const changeMinionHp = (minionIndex: number, amount: number) => {
@@ -179,12 +221,25 @@ export default function EventPanel({
                             <View key={minion.id} style={styles.minionCard}>
                                 <View style={{flexDirection:'row', alignItems:'center', flex:1}}>
                                     {minion.image_url ? <Image source={{ uri: minion.image_url }} style={styles.minionThumb} /> : <View style={[styles.minionThumb, {backgroundColor:'#333'}]} />}
-                                    <Text style={styles.minionName}>{minion.name}</Text>
+                                    <View>
+                                        <Text style={styles.minionName}>{minion.name}</Text>
+                                        {/* Botão de Editar Adicionado Aqui */}
+                                        <TouchableOpacity onPress={() => openEditMinion(idx)} style={{flexDirection:'row', alignItems:'center', marginTop:2}}>
+                                             <Ionicons name="pencil" size={12} color="#FFD700" style={{marginRight:4}}/>
+                                             <Text style={{color:'#FFD700', fontSize:10}}>Editar</Text>
+                                        </TouchableOpacity>
+                                    </View>
                                 </View>
                                 <View style={styles.minionControls}>
                                     <TouchableOpacity onPress={() => changeMinionHp(idx, -5)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#330000', marginRight:2}]}><Text style={{color:'#ff4444', fontSize:9}}>-5</Text></TouchableOpacity>
                                     <TouchableOpacity onPress={() => changeMinionHp(idx, -1)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={12} color="#fff"/></TouchableOpacity>
-                                    <Text style={styles.minionHp}>{minion.current_hp}</Text>
+                                    
+                                    {/* Exibição do HP */}
+                                    <View style={{alignItems:'center', minWidth: 35}}>
+                                        <Text style={styles.minionHp}>{minion.current_hp}</Text>
+                                        <Text style={{color:'#555', fontSize:8}}>/{minion.max_hp}</Text>
+                                    </View>
+                                    
                                     <TouchableOpacity onPress={() => changeMinionHp(idx, 1)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#00B37E'}]}><Ionicons name="add" size={12} color="#fff"/></TouchableOpacity>
                                     <TouchableOpacity onPress={() => changeMinionHp(idx, 5)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#003300', marginLeft:2}]}><Text style={{color:'#00B37E', fontSize:9}}>+5</Text></TouchableOpacity>
                                 </View>
@@ -197,7 +252,6 @@ export default function EventPanel({
                 {skills.length > 0 && (
                     <View style={{marginTop:10}}>
                         <Text style={styles.sectionLabel}>HABILIDADES</Text>
-                        {/* TIPAGEM EXPLÍCITA AQUI */}
                         {skills.map((skill: BossSkill, idx: number) => (
                             <View key={idx} style={styles.skillCard}>
                                 <Text style={styles.skillName}>{skill.name}</Text>
@@ -211,6 +265,7 @@ export default function EventPanel({
                 )}
             </ScrollView>
 
+            {/* MODAL DE INVOCAR (JÁ EXISTENTE) */}
             <Modal visible={summonModalVisible} animationType="slide" transparent={true} onRequestClose={() => setSummonModalVisible(false)}>
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContent}>
@@ -235,6 +290,39 @@ export default function EventPanel({
                     </View>
                 </View>
             </Modal>
+
+            {/* NOVO MODAL DE EDIÇÃO */}
+            <Modal visible={editMinionModalVisible} animationType="fade" transparent={true} onRequestClose={() => setEditMinionModalVisible(false)}>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+                    <View style={[styles.modalContent, {maxHeight: 'auto'}]}>
+                        <Text style={styles.modalTitle}>EDITAR PERSONAGEM</Text>
+                        
+                        <Text style={styles.label}>Nome:</Text>
+                        <TextInput style={styles.inputModal} value={editMinionName} onChangeText={setEditMinionName} placeholder="Nome" placeholderTextColor="#555"/>
+                        
+                        <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                            <View style={{flex:1, marginRight:5}}>
+                                <Text style={styles.label}>HP Atual:</Text>
+                                <TextInput style={styles.inputModal} value={editMinionCurHp} onChangeText={setEditMinionCurHp} keyboardType="numeric"/>
+                            </View>
+                            <View style={{flex:1, marginLeft:5}}>
+                                <Text style={styles.label}>HP Máximo:</Text>
+                                <TextInput style={styles.inputModal} value={editMinionMaxHp} onChangeText={setEditMinionMaxHp} keyboardType="numeric"/>
+                            </View>
+                        </View>
+
+                        <View style={{flexDirection:'row', marginTop:15}}>
+                            <TouchableOpacity onPress={saveMinionEdit} style={[styles.attackBtn, {flex:1, backgroundColor:'#00B37E', marginRight:5}]}>
+                                <Text style={{color:'#fff', fontWeight:'bold', textAlign:'center'}}>SALVAR</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => setEditMinionModalVisible(false)} style={[styles.attackBtn, {flex:1, backgroundColor:'#333', marginLeft:5}]}>
+                                <Text style={{color:'#fff', fontWeight:'bold', textAlign:'center'}}>CANCELAR</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
+
         </View>
     );
 }
@@ -269,12 +357,16 @@ const styles = StyleSheet.create({
     minionThumb: { width: 30, height: 30, borderRadius: 15, marginRight: 10 },
     minionName: { color:'#fff', fontWeight:'bold', fontSize:14 },
     minionControls: { flexDirection:'row', alignItems:'center' },
-    minionHp: { color:'#fff', fontWeight:'bold', fontSize:16, marginHorizontal:8 },
+    minionHp: { color:'#fff', fontWeight:'bold', fontSize:16, marginHorizontal:2 },
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding:20 },
     modalContent: { backgroundColor: '#18181B', borderRadius: 12, padding: 20, maxHeight: '80%', borderWidth:1, borderColor:'#8257e5' },
     modalHeader: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:15, borderBottomWidth:1, borderColor:'#333', paddingBottom:10 },
-    modalTitle: { color:'#FFD700', fontSize:18, fontWeight:'bold' },
+    modalTitle: { color:'#FFD700', fontSize:18, fontWeight:'bold', marginBottom: 15, textAlign:'center' },
     charItem: { flexDirection:'row', alignItems:'center', padding:10, borderBottomWidth:1, borderColor:'#333' },
     charItemImg: { width:40, height:40, borderRadius:20, marginRight:10 },
-    charItemName: { color:'#fff', fontWeight:'bold' }
+    charItemName: { color:'#fff', fontWeight:'bold' },
+    
+    // Novos estilos para o Modal
+    label: { color:'#ccc', fontSize:12, marginBottom:5 },
+    inputModal: { backgroundColor:'#222', color:'#fff', borderWidth:1, borderColor:'#444', borderRadius:8, padding:10, marginBottom:15 }
 });
