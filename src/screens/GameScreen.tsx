@@ -1,4 +1,3 @@
-// src/screens/GameScreen.tsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, ScrollView, 
@@ -15,7 +14,8 @@ interface GameScreenProps {
   onExitGame: () => void;
 }
 
-// --- DEFINIÇÃO DAS INTERFACES DE PARCEIRO ---
+// --- INTERFACES AUXILIARES ---
+
 interface PartnerEvolution {
     target_level: number;
     new_name: string;
@@ -30,12 +30,27 @@ interface PartnerMember extends TeamMember {
     evolutions?: PartnerEvolution[];
 }
 
-// Interface auxiliar para renderização no modal
 interface RenderableSkill {
     skill: CharacterSkill;
     locked: boolean;
     sourceName?: string;
     reqLevel: number;
+}
+
+// Interface local para Skill de Boss (para visualização no GameScreen)
+interface BossSkill {
+    name: string;
+    description: string;
+    target: 'players_global' | 'self';
+}
+
+// Interface para o Estado Sincronizado do Evento (Boss/Inimigo)
+interface EventState {
+    current_hp: number;
+    max_hp: number;
+    name: string;
+    image_url?: string;
+    boss_skills?: BossSkill[];
 }
 
 export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenProps) {
@@ -48,11 +63,15 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const [charactersMap, setCharactersMap] = useState<Record<string, GameCharacter>>({});
   
   const [allRawSkills, setAllRawSkills] = useState<CharacterSkill[]>([]);
-  const [mySkills, setMySkills] = useState<CharacterSkill[]>([]); // Skills DESBLOQUEADAS do Main
+  const [mySkills, setMySkills] = useState<CharacterSkill[]>([]);
   const [currentLevel, setCurrentLevel] = useState(1); 
 
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
   const [challengesCompletedMap, setChallengesCompletedMap] = useState<Record<string, boolean>>({});
+
+  // ESTADO DO EVENTO (BOSS)
+  const [gameEvent, setGameEvent] = useState<GameEvent | null>(null); 
+  const [eventState, setEventState] = useState<EventState | null>(null);
 
   // MODAIS
   const [skillsModalVisible, setSkillsModalVisible] = useState(false);
@@ -66,8 +85,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const [notificationData, setNotificationData] = useState({
       title: '', message: '', type: 'info', onConfirm: () => {}, hasCancel: false, onCancel: () => {}, confirmText: 'CONFIRMAR', cancelText: 'CANCELAR'
   });
-
-  const [gameEvent, setGameEvent] = useState<GameEvent | null>(null);
   
   const currentEventIdRef = useRef<string | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
@@ -99,20 +116,18 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
   const myChar = myParticipant?.selected_character_id ? charactersMap[myParticipant.selected_character_id] : null;
   const activeUnits = (myParticipant?.team_state as TeamMemberState[]) || [];
   
-  // Membros na reserva
   const reserveMembers = (myChar?.team_members || []).filter(m => !activeUnits.some(u => u.name === m.name));
   
   const filteredEffects = catalogEffects.filter(e => e.type === targetEffectType);
   const myBannerActive = (myParticipant?.challenge_completed || (myParticipant && challengesCompletedMap[`${myParticipant.user_id}_${myParticipant.selected_character_id}`])) && myChar?.challenge_banner_url;
 
-  // Lógica Robusta para Detectar Modo HIT
   const isTransformedHit = (myParticipant?.active_transformations || []).some(t => {
       const skill = allRawSkills.find(s => s.name === t.name);
       return skill?.is_hit_based;
   });
   const isHitMode = myChar?.category === 'hit' || (myParticipant?.pre_transformation_hp !== null && myParticipant?.pre_transformation_hp !== undefined);
 
-  // --- SKILLS COMBINADAS (Visualização no Arsenal) ---
+  // --- SKILLS COMBINADAS ---
   const combinedSkills: RenderableSkill[] = useMemo(() => {
       const result: RenderableSkill[] = [];
 
@@ -132,9 +147,6 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
               originalPartnerData.skills.forEach(s => {
                   const reqLevel = s.unlock_level || 1;
                   const unitLevel = unitState.current_level || 1;
-                  
-                  // Se o parceiro tiver sistema de nível, verifica se está bloqueada
-                  // Se não tiver (nível 1 fixo), reqLevel será 1 e passará
                   const isLocked = unitLevel < reqLevel;
 
                   result.push({
@@ -199,6 +211,19 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
           console.log("⚡ É MEU TURNO!"); 
       } 
       prevTurnIdRef.current = currentTurnParticipantId; 
+  };
+
+  // --- SINCRONIA DO EVENTO ---
+  const changeEventHp = async (amount: number) => {
+      if (!room || !eventState) return;
+
+      const newHp = Math.max(0, Math.min(eventState.max_hp, eventState.current_hp + amount));
+      
+      const newState = { ...eventState, current_hp: newHp };
+      setEventState(newState); // Otimista
+
+      // Atualiza na sala para todos
+      await supabase.from('rooms').update({ event_state: newState }).eq('code', roomCode);
   };
 
   const processEndTurnLogic = async () => {
@@ -403,17 +428,16 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       const evaluateSkill = (skill: CharacterSkill, memberState?: TeamMemberState) => {
           if (skill.type !== 'passive') return;
 
-          // CORREÇÃO CRÍTICA AQUI:
           // Se houver um estado de membro (Parceiro ou Time), verifica o nível DELE
           if (memberState) {
               const reqLevel = skill.unlock_level || 1;
               const memLevel = memberState.current_level || 1;
-              if (memLevel < reqLevel) return; // BLOQUEIA SE O NÍVEL DO PARCEIRO FOR BAIXO
+              if (memLevel < reqLevel) return; 
           }
 
           const pType = skill.passive_type; 
           let isOwnerActive = true;
-          // Se for equipe ou parceiro, verifica se está ativo
+          
           if ((myChar.category === 'equipe' || activeUnits.length > 0) && memberState) {
               isOwnerActive = activeUnits.some(u => u.name === memberState.name);
           }
@@ -443,18 +467,15 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
           }
       };
 
-      // Processa skills da Equipe / Parceiros
       if ((myChar.category === 'equipe' || activeUnits.length > 0) && myChar.team_members) {
           myChar.team_members.forEach(m => {
               const mState = activeUnits.find(u => u.name === m.name);
-              // Para Parceiros, aplicamos a passiva se ele estiver em campo
               if (mState && m.skills) {
                   m.skills.forEach(s => evaluateSkill(s, mState));
               }
           });
       } 
       
-      // Processa skills do Personagem Principal
       if (mySkills.length > 0) {
           mySkills.forEach(s => evaluateSkill(s));
       }
@@ -675,15 +696,33 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       if (wasHit && !stillHit) {
           const originalHp = myParticipant.pre_transformation_hp || 10;
           const originalMaxHp = myChar?.base_hp || 10;
-          setMyParticipant(prev => prev ? ({ ...prev, active_transformations: newList, pre_transformation_hp: null, current_hp: originalHp, max_hp: originalMaxHp }) : null);
-          setHp(originalHp); setMaxHp(originalMaxHp); blockUpdateRef.current = true;
-          updatePayload.pre_transformation_hp = null; updatePayload.current_hp = originalHp; updatePayload.max_hp = originalMaxHp;
-          didRevert = true; setTimeout(() => { blockUpdateRef.current = false; }, 1000);
+          
+          setMyParticipant(prev => prev ? ({ 
+              ...prev, 
+              active_transformations: newList, 
+              pre_transformation_hp: null, // Limpa flag local
+              current_hp: originalHp, 
+              max_hp: originalMaxHp 
+          }) : null);
+          
+          setHp(originalHp); 
+          setMaxHp(originalMaxHp); 
+          blockUpdateRef.current = true;
+          
+          updatePayload.pre_transformation_hp = null; 
+          updatePayload.current_hp = originalHp; 
+          updatePayload.max_hp = originalMaxHp;
+          didRevert = true; 
+          
+          setTimeout(() => { blockUpdateRef.current = false; }, 1000);
       } else {
           setMyParticipant(prev => prev ? ({ ...prev, active_transformations: newList }) : null);
       }
+      
       await supabase.from('room_participants').update(updatePayload).eq('id', myParticipant.id);
-      if (didRevert) { showCustomAlert("Destransformar", `Transformação ${transName} removida. Voltando à forma normal.`, 'info'); } else { showCustomAlert("Info", `Transformação ${transName} removida.`, 'info'); }
+      
+      if (didRevert) { showCustomAlert("Destransformar", `Transformação ${transName} removida. Voltando à forma normal.`, 'info'); } 
+      else { showCustomAlert("Info", `Transformação ${transName} removida.`, 'info'); }
   };
 
   const openEffectList = (type: 'buff' | 'debuff') => { setTargetEffectType(type); setEffectsListModalVisible(true); };
@@ -695,9 +734,39 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         const { data: roomData, error: roomError } = await supabase.from('rooms').select('*').eq('code', roomCode).maybeSingle(); 
         if (roomError) throw roomError;
         if (!roomData) { Alert.alert("Erro", "Sala não encontrada."); onExitGame(); return; }
+        
         setRoom(roomData);
+        
+        // SINCRONIZA EVENTO
+        if (roomData.event_state) {
+            setEventState(roomData.event_state);
+        }
+
         if (roomData.current_turn_participant_id) checkTurnChange(roomData.current_turn_participant_id);
-        if (roomData.selected_event_id && roomData.selected_event_id !== currentEventIdRef.current) { const { data: ev } = await supabase.from('game_events').select('*').eq('id', roomData.selected_event_id).maybeSingle(); if (ev) { setGameEvent(ev); currentEventIdRef.current = ev.id; hasShownEventRef.current = false; } if (!hasShownEventRef.current) { setEventModalVisible(true); hasShownEventRef.current = true; } }
+        
+        if (roomData.selected_event_id && roomData.selected_event_id !== currentEventIdRef.current) {
+            const { data: ev } = await supabase.from('game_events').select('*').eq('id', roomData.selected_event_id).maybeSingle();
+            if (ev) { 
+                setGameEvent(ev); 
+                currentEventIdRef.current = ev.id; 
+                
+                // INICIALIZA O EVENTO SE NÃO EXISTIR NA SALA
+                if (!roomData.event_state && (ev.base_hp || 0) > 0) {
+                    const initialState: EventState = {
+                        current_hp: ev.base_hp || 0,
+                        max_hp: ev.base_hp || 0,
+                        name: ev.enemy_name || 'Inimigo',
+                        image_url: ev.image_url,
+                        boss_skills: ev.boss_skills || []
+                    };
+                    await supabase.from('rooms').update({ event_state: initialState }).eq('code', roomCode);
+                    setEventState(initialState);
+                }
+
+                hasShownEventRef.current = false; 
+            }
+            if (!hasShownEventRef.current) { setEventModalVisible(true); hasShownEventRef.current = true; }
+        }
         if (catalogEffects.length === 0) { const { data: effs } = await supabase.from('game_status_effects').select('*').order('title'); if (effs) setCatalogEffects(effs); }
         
         const { data: parts } = await supabase.from('room_participants').select('*').eq('room_code', roomCode).order('turn_order', { ascending: true });
@@ -721,7 +790,25 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
         }
     } catch (error: any) { console.log("Erro fetchGameData:", error); }
   };
-  const subscribeToGame = () => { const channel = supabase.channel(`game_${roomCode}`).on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${roomCode}` }, payload => { const newRoom = payload.new as Room; setRoom(newRoom); if (newRoom.current_turn_participant_id) checkTurnChange(newRoom.current_turn_participant_id); if (newRoom.selected_event_id && newRoom.selected_event_id !== currentEventIdRef.current) fetchGameData(); }).on('postgres_changes', { event: '*', schema: 'public', table: 'room_participants', filter: `room_code=eq.${roomCode}` }, () => fetchGameData()).subscribe(); channelRef.current = channel; };
+  
+  const subscribeToGame = () => {
+    const channel = supabase.channel(`game_${roomCode}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${roomCode}` }, payload => {
+            const newRoom = payload.new as Room;
+            setRoom(newRoom);
+            
+            // SINCRONIZA EVENTO EM REALTIME
+            if (newRoom.event_state) {
+                setEventState(newRoom.event_state);
+            }
+            
+            if (newRoom.current_turn_participant_id) checkTurnChange(newRoom.current_turn_participant_id);
+            if (newRoom.selected_event_id && newRoom.selected_event_id !== currentEventIdRef.current) fetchGameData(); 
+        })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'room_participants', filter: `room_code=eq.${roomCode}` }, () => fetchGameData())
+      .subscribe();
+    channelRef.current = channel;
+  };
 
   useEffect(() => {
       if (!participants || participants.length === 0 || !myParticipant) return;
@@ -732,6 +819,10 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       }
   }, [participants, myParticipant, victoryHandled]);
 
+
+  // ===========================================================================
+  // 7. RENDER
+  // ===========================================================================
 
   if (!myParticipant || !room) return <View style={styles.loading}><ActivityIndicator size="large" color="#8257e5" /><Text style={{color:'#fff'}}>Carregando...</Text><TouchableOpacity onPress={onExitGame} style={{marginTop:20, padding:10, backgroundColor:'#333', borderRadius:8}}><Text style={{color:'#fff'}}>Sair</Text></TouchableOpacity></View>;
 
@@ -753,6 +844,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
+        
         {/* BANNER PRINCIPAL DO JOGADOR */}
         <View style={[styles.charArea, !myBannerActive && {backgroundColor: '#2A2A2E'}]}>
             {myBannerActive && ( <Image source={{ uri: myChar?.challenge_banner_url }} style={styles.bannerBackground} resizeMode="cover" /> )}
@@ -800,6 +892,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                                     </View>
                                 )}
                             </View>
+
                             {/* LINHA 2: CONTROLES DE HP */}
                             <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
                                 <View style={{flexDirection:'row', alignItems:'center'}}>
@@ -808,6 +901,7 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                                     <Text style={{color:'#fff', fontWeight:'bold', marginHorizontal:4}}>{unit.max_hp}</Text>
                                     <TouchableOpacity onPress={() => changeUnitMaxHp(idx, 1)}><Ionicons name="add-circle" size={20} color="#555"/></TouchableOpacity>
                                 </View>
+
                                 <View style={styles.unitControls}>
                                     <TouchableOpacity onPress={() => changeUnitHp(idx, -10)} style={[styles.miniBtn, {backgroundColor:'#330000', width:28, height:28, marginRight:4}]}><Text style={{color:'#ff4444', fontSize:10, fontWeight:'bold'}}>-10</Text></TouchableOpacity>
                                     <TouchableOpacity onPress={() => changeUnitHp(idx, -1)} style={[styles.miniBtn, {backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={16} color="#fff"/></TouchableOpacity>
@@ -819,6 +913,8 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
                         </View>
                     ))
                 )}
+                
+                {/* VISUALIZAÇÃO TOTAL DO EXÉRCITO SEM CONTROLES */}
                 <View style={{marginTop: 15, padding: 10, backgroundColor: '#18181B', borderRadius: 8, borderWidth:1, borderColor:'#333', alignItems:'center'}}>
                      <Text style={{color:'#777', fontSize:10, textAlign:'center', marginBottom:5}}>HP TOTAL DO EXÉRCITO:</Text>
                      <Text style={{color:'#fff', fontSize:24, fontWeight:'bold'}}>{hp}</Text>
@@ -1084,17 +1180,84 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 
       <Modal animationType="fade" transparent={true} visible={eventModalVisible} onRequestClose={() => setEventModalVisible(false)}>
         <View style={styles.modalOverlay}>
-            <View style={[styles.styledModalContent, {borderColor:'#FFD700'}]}>
+            <View style={[styles.styledModalContent, {borderColor:'#FFD700', maxHeight: '90%'}]}>
                 <View style={styles.styledModalHeader}>
                     <Text style={[styles.styledModalTitle, {color:'#FFD700'}]}>📜 MISSÃO ATUAL</Text>
                     <TouchableOpacity onPress={() => setEventModalVisible(false)}><Ionicons name="close" size={28} color="#ccc" /></TouchableOpacity>
                 </View>
-                {gameEvent ? (<ScrollView>
-                    {gameEvent.image_url && <Image source={{uri: gameEvent.image_url}} style={{width:'100%', height:200, borderRadius:8, marginBottom:15, borderWidth:1, borderColor:'#333'}} resizeMode='cover' />}
-                    <Text style={{color:'#fff', fontSize:22, fontWeight:'bold', marginBottom:10, textAlign:'center'}}>{gameEvent.title}</Text>
-                    <Text style={{color:'#ccc', fontSize:16, lineHeight:24, textAlign:'justify'}}>{gameEvent.description}</Text>
-                </ScrollView>) : <ActivityIndicator size="large" color="#FFD700" />}
-                <TouchableOpacity style={[styles.passTurnButton, {marginTop:20, backgroundColor:'#333'}]} onPress={() => setEventModalVisible(false)}><Text style={{color:'#fff', fontWeight:'bold'}}>ENTENDIDO</Text></TouchableOpacity>
+                
+                <ScrollView>
+                    {/* IMAGEM DA GALERIA (Do State Dinâmico ou do Evento Base) */}
+                    {(eventState?.image_url || gameEvent?.image_url) && (
+                        <Image 
+                            source={{ uri: eventState?.image_url || gameEvent?.image_url }} 
+                            style={{width:'100%', height:200, borderRadius:8, marginBottom:15, borderWidth:1, borderColor:'#333'}} 
+                            resizeMode='cover' 
+                        />
+                    )}
+
+                    <Text style={{color:'#fff', fontSize:22, fontWeight:'bold', marginBottom:10, textAlign:'center'}}>
+                        {gameEvent?.title}
+                    </Text>
+                    <Text style={{color:'#ccc', fontSize:16, lineHeight:24, textAlign:'justify', marginBottom: 20}}>
+                        {gameEvent?.description}
+                    </Text>
+
+                    {/* ÁREA DE COMBATE DO EVENTO (SINCRONIZADA) */}
+                    {eventState && (
+                        <View style={{backgroundColor: '#222', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#ff4444'}}>
+                            <Text style={{color: '#ff4444', fontWeight: 'bold', fontSize: 18, marginBottom: 10, textAlign: 'center'}}>
+                                {eventState.name.toUpperCase()} (INIMIGO)
+                            </Text>
+                            
+                            <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10}}>
+                                <TouchableOpacity onPress={() => changeEventHp(-10)} style={[styles.miniBtn, {backgroundColor: '#330000', width: 40, height: 40}]}>
+                                    <Text style={{color: '#ff4444', fontWeight: 'bold'}}>-10</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={() => changeEventHp(-1)} style={[styles.miniBtn, {backgroundColor: '#ff4444', width: 40, height: 40}]}>
+                                    <Ionicons name="remove" size={24} color="#fff" />
+                                </TouchableOpacity>
+                                
+                                <View style={{alignItems: 'center'}}>
+                                    <Text style={{color: '#fff', fontSize: 32, fontWeight: 'bold'}}>{eventState.current_hp}</Text>
+                                    <Text style={{color: '#777', fontSize: 12}}>de {eventState.max_hp}</Text>
+                                </View>
+
+                                <TouchableOpacity onPress={() => changeEventHp(1)} style={[styles.miniBtn, {backgroundColor: '#00B37E', width: 40, height: 40}]}>
+                                    <Ionicons name="add" size={24} color="#fff" />
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={() => changeEventHp(10)} style={[styles.miniBtn, {backgroundColor: '#003300', width: 40, height: 40}]}>
+                                    <Text style={{color: '#00B37E', fontWeight: 'bold'}}>+10</Text>
+                                </TouchableOpacity>
+                            </View>
+                            
+                            {/* BARRA DE VIDA VISUAL */}
+                            <View style={{height: 10, backgroundColor: '#444', borderRadius: 5, overflow: 'hidden'}}>
+                                <View style={{
+                                    height: '100%', 
+                                    backgroundColor: '#ff4444', 
+                                    width: `${(eventState.current_hp / eventState.max_hp) * 100}%`
+                                }} />
+                            </View>
+                        </View>
+                    )}
+                    
+                    {eventState?.boss_skills && eventState.boss_skills.length > 0 && (
+                      <View style={{marginTop: 20}}>
+                          <Text style={{color:'#ccc', fontSize:12, fontWeight:'bold', marginBottom:5, textAlign:'center'}}>HABILIDADES E PASSIVAS DO CHEFE</Text>
+                          {eventState.boss_skills.map((skill, idx) => (
+                              <View key={idx} style={{backgroundColor:'#222', padding:10, borderRadius:8, marginBottom:5, borderLeftWidth: 4, borderLeftColor: skill.target === 'players_global' ? '#ff4444' : '#00B37E'}}>
+                                  <Text style={{color:'#fff', fontWeight:'bold', fontSize:14}}>{skill.name}</Text>
+                                  <Text style={{color:'#aaa', fontSize:12, marginTop:2}}>{skill.description}</Text>
+                                  <Text style={{color: skill.target === 'players_global' ? '#ff6666' : '#66ff66', fontSize:10, marginTop:4, fontStyle:'italic'}}>{skill.target === 'players_global' ? '⚠ Afeta todos os jogadores' : '✦ Buff do Chefe'}</Text>
+                              </View>
+                          ))}
+                      </View>
+                    )}
+                </ScrollView>
+                <TouchableOpacity style={[styles.passTurnButton, {marginTop:20, backgroundColor:'#333'}]} onPress={() => setEventModalVisible(false)}>
+                    <Text style={{color:'#fff', fontWeight:'bold'}}>FECHAR</Text>
+                </TouchableOpacity>
             </View>
         </View>
       </Modal>
@@ -1103,14 +1266,24 @@ export default function GameScreen({ roomCode, userId, onExitGame }: GameScreenP
 }
 
 const styles = StyleSheet.create({
+  // Layout Básico
   container: { flex: 1, backgroundColor: '#121214', paddingTop: 50 },
   loading: { flex: 1, backgroundColor: '#121214', justifyContent:'center', alignItems:'center' },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: 220 }, // Aumentado para evitar corte
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 220 },
+  
+  // Header do Turno
   turnHeader: { backgroundColor: '#202024', paddingHorizontal: 15, paddingBottom: 10, paddingTop: 35, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#333', flexDirection:'row', justifyContent:'space-between' },
   myTurnHeader: { backgroundColor: '#3e2e6b', borderBottomColor: '#8257e5' },
   turnText: { color: '#fff', fontSize: 14, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 1 },
   missionBtn: { flexDirection:'row', alignItems:'center', backgroundColor:'rgba(0,0,0,0.3)', padding:6, borderRadius:20 },
   missionBtnText: { color:'#fff', fontSize:12, fontWeight:'bold' },
+  
+  // Indicadores de Fase (Bolinhas)
+  phaseDot: { width:6, height:6, borderRadius:3, backgroundColor:'#444', marginHorizontal:2 },
+  phaseLine: { width:15, height:2, backgroundColor:'#444' },
+  phaseText: { marginLeft: 10, fontSize: 10, fontWeight:'bold', letterSpacing:1 },
+
+  // Área do Personagem
   charArea: { flexDirection: 'row', alignItems: 'center', marginBottom: 25, marginTop: 10, padding: 15, borderRadius: 12, position: 'relative', overflow: 'hidden' },
   bannerBackground: { ...StyleSheet.absoluteFillObject, opacity: 0.6, zIndex: -1 },
   bannerOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.06)', zIndex: -1 },
@@ -1121,12 +1294,20 @@ const styles = StyleSheet.create({
   charName: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
   charClass: { color: '#8257e5', fontSize: 16 },
   playerNameTag: { color: '#ccc', fontSize: 14, fontStyle: 'italic' },
+  
+  // Cards de Status (HP, Escudo)
   statsCard: { backgroundColor: '#202024', borderRadius: 12, padding: 15, marginBottom: 15 },
   label: { color: '#ccc', fontSize: 12, fontWeight: 'bold' },
   hpControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   hpBtn: { width: 50, height: 50, borderRadius: 25, alignItems: 'center', justifyContent: 'center', elevation: 2 },
   hpDisplay: { alignItems: 'center' },
   hpValue: { color: '#fff', fontSize: 42, fontWeight: 'bold' },
+  
+  // Botões de controle pequeno (HP)
+  smallCtrlBtn: { width:30, height:30, alignItems:'center', justifyContent:'center', borderRadius:8, borderWidth:1, borderColor:'#555', backgroundColor:'#222' },
+  smallCtrlText: { color:'#fff', fontSize:10, fontWeight:'bold' },
+
+  // Lista de Participantes
   sectionTitle: { color: '#fff', fontSize: 18, marginTop: 20, marginBottom: 10, fontWeight:'bold', borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 5 },
   participantRow: { flexDirection: 'row', justifyContent: 'space-between', padding: 15, alignItems: 'center', marginBottom: 10, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#333', position: 'relative' },
   activeRowBorder: { borderColor: '#FFD700', borderWidth: 2 },
@@ -1135,7 +1316,8 @@ const styles = StyleSheet.create({
   pName: { color: '#fff', fontSize: 16 },
   pSubName: { color: '#ddd', fontSize: 12 },
   pHp: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  // FOOTER CORRIGIDO COM PADDING BOTTOM MAIOR
+  
+  // Footer
   footer: { 
       position: 'absolute', 
       bottom: 0, 
@@ -1147,39 +1329,46 @@ const styles = StyleSheet.create({
       elevation: 10,
       paddingHorizontal: 20,
       paddingTop: 20,
-      paddingBottom: 50 // Espaço para nav bar do Android
+      paddingBottom: 50 
   },
   passTurnButton: { backgroundColor: '#FFD700', padding: 18, borderRadius: 12, alignItems: 'center', elevation: 5 },
   passTurnText: { color: '#000', fontWeight: 'bold', fontSize: 16 },
   waitingBox: { backgroundColor: '#202024', padding: 15, borderRadius: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center' },
   waitingText: { color: '#aaa', fontStyle: 'italic' },
   exitButton: { alignItems: 'center', marginTop: 15 },
+  
+  // Botão de Skills
   skillsButton: { flexDirection:'row', backgroundColor:'#333', padding:15, borderRadius:8, alignItems:'center', justifyContent:'center', marginVertical:10, borderWidth:1, borderColor:'#FFD700' },
   skillsButtonText: { color:'#FFD700', fontWeight:'bold', fontSize:14 },
+  
+  // Modais Estilizados (Arsenal, Missão, etc) - ESSES ESTAVAM FALTANDO
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding:20 },
   styledModalContent: { backgroundColor: '#18181B', borderRadius: 24, padding: 20, maxHeight: '80%', borderWidth: 1, shadowColor: "#000", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.5, shadowRadius: 10, elevation: 20 },
   styledModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems:'center', marginBottom: 20, paddingBottom: 15, borderBottomWidth: 1, borderBottomColor: '#333' },
   styledModalTitle: { fontSize: 22, fontWeight: 'bold', letterSpacing: 1 },
+  
+  // Itens dentro dos Modais (Skills, etc)
   cardItem: { backgroundColor: '#27272A', padding: 15, borderRadius: 12, marginBottom: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   cardName: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   cardDesc: { color: '#aaa', fontSize: 12, marginTop: 4 },
+  
+  // Badges e Tags
   skillSection: { marginBottom: 20 },
   skillHeader: { fontSize: 12, fontWeight: 'bold', marginBottom: 10, letterSpacing: 1 },
   activateBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, backgroundColor:'#FFD700' },
   activateText: { color: '#000', fontSize: 10, fontWeight: 'bold' },
   activeTransBadge: { backgroundColor:'rgba(255, 215, 0, 0.2)', borderWidth:1, borderColor:'#FFD700', paddingHorizontal:8, paddingVertical:4, borderRadius:4, marginRight:5, marginBottom:5 },
   activeTransText: { color:'#FFD700', fontSize:12, fontWeight:'bold' },
-  phaseDot: { width:6, height:6, borderRadius:3, backgroundColor:'#444', marginHorizontal:2 },
-  phaseLine: { width:15, height:2, backgroundColor:'#444' },
-  phaseText: { marginLeft: 10, fontSize: 10, fontWeight:'bold', letterSpacing:1 },
+  
+  // Equipe / Parceiros
   addMemberBtn: { flexDirection:'row', alignItems:'center', backgroundColor:'#FFD700', paddingHorizontal:8, paddingVertical:4, borderRadius:12 },
   addMemberText: { color:'#000', fontSize:10, fontWeight:'bold' },
   teamContainer: { backgroundColor: '#202024', borderRadius: 12, padding: 15, marginBottom: 15 },
   unitRow: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10, borderBottomWidth:1, borderBottomColor:'#333', paddingBottom:5 },
   unitName: { color:'#fff', fontSize:16, fontWeight:'bold', flex:1 },
   unitControls: { flexDirection:'row', alignItems:'center' },
-  miniBtn: { width:30, height:30, borderRadius:15, alignItems:'center', justifyContent:'center' },
   unitHp: { color:'#fff', fontSize:18, fontWeight:'bold', marginHorizontal:10 },
-  smallCtrlBtn: { width:30, height:30, alignItems:'center', justifyContent:'center', borderRadius:8, borderWidth:1, borderColor:'#555', backgroundColor:'#222' },
-  smallCtrlText: { color:'#fff', fontSize:10, fontWeight:'bold' }
+  
+  // Botões Mini (Usados no Evento/Boss)
+  miniBtn: { width:30, height:30, borderRadius:15, alignItems:'center', justifyContent:'center' }
 });
