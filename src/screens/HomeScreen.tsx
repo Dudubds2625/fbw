@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, ScrollView, 
-  RefreshControl, Alert, Modal, FlatList, TextInput, Image, KeyboardAvoidingView, Platform, ActivityIndicator 
+  RefreshControl, Alert, Modal, FlatList, TextInput, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Switch 
 } from 'react-native';
 import { supabase } from '../lib/supabase';
-import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, MatchHistoryItem, BossSkill, EventCharacter } from '../types/rpg';
+import { UserRosterItem, GameCharacter, Victory, GameEvent, Room, RoomParticipant, CharacterSkill, StatusEffect, TeamMember, MatchHistoryItem, BossSkill, EventCharacter, Faction } from '../types/rpg';
 import { Ionicons } from '@expo/vector-icons'; 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker'; 
@@ -49,6 +49,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [catalogChars, setCatalogChars] = useState<GameCharacterWithCreator[]>([]);
   const [catalogEvents, setCatalogEvents] = useState<GameEvent[]>([]);
   const [catalogEffects, setCatalogEffects] = useState<StatusEffect[]>([]); 
+  const [catalogSkills, setCatalogSkills] = useState<CharacterSkill[]>([]); // Novo: Para selecionar skill da facção
   const [victories, setVictories] = useState<Victory[]>([]);
   const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
   
@@ -152,6 +153,13 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [newEventImage, setNewEventImage] = useState('');
   const [pickedEventImageUri, setPickedEventImageUri] = useState('');
   
+  // >>>> NOVO: MODO FACÇÃO <<<<
+  const [isFactionEvent, setIsFactionEvent] = useState(false);
+  const [eventFactions, setEventFactions] = useState<Faction[]>([]);
+  const [newFactionName, setNewFactionName] = useState('');
+  const [newFactionSkill, setNewFactionSkill] = useState<CharacterSkill | null>(null);
+  const [selectFactionSkillModalVisible, setSelectFactionSkillModalVisible] = useState(false);
+
   // Lista de Personagens do Evento
   const [eventCharacters, setEventCharacters] = useState<EventCharacter[]>([]);
   
@@ -176,7 +184,7 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const [bossSkillTarget, setBossSkillTarget] = useState<'players_global' | 'self'>('players_global');
   const [editingBossSkillIndex, setEditingBossSkillIndex] = useState<number | null>(null);
   
-  // Dados do Evento Antigo
+  // Dados do Evento Antigo (Legacy - não mais usado ativamente no modal novo, mas mantido por compatibilidade de state)
   const [newEventEnemyName, setNewEventEnemyName] = useState('');
   const [newEventEnemyHp, setNewEventEnemyHp] = useState('');
   const [newEventHasLife, setNewEventHasLife] = useState(true);
@@ -207,7 +215,13 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   // ==================================================================================
   const fetchParticipants = async (code: string) => { const { data } = await supabase.from('room_participants').select('*').eq('room_code', code); if (data) setParticipants(data); };
   const subscribeToRoom = (roomCode: string) => { if (roomChannelRef.current) supabase.removeChannel(roomChannelRef.current); const channel = supabase.channel(`room_${roomCode}`).on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${roomCode}` }, (payload) => { const updatedRoom = payload.new as Room; setCurrentRoom(updatedRoom); if (updatedRoom.status === 'playing') { setLobbyModalVisible(false); onStartGame(roomCode); } }).on('postgres_changes', { event: '*', schema: 'public', table: 'room_participants', filter: `room_code=eq.${roomCode}` }, () => fetchParticipants(roomCode)).subscribe(); roomChannelRef.current = channel; };
-  const fetchCatalogs = async () => { const { data: chars } = await supabase.from('game_characters').select('*').order('name'); if (chars) setCatalogChars(chars); const { data: events } = await supabase.from('game_events').select('*').order('title'); if (events) setCatalogEvents(events); const { data: effects } = await supabase.from('game_status_effects').select('*').order('title'); if (effects) setCatalogEffects(effects); };
+  
+  const fetchCatalogs = async () => { 
+      const { data: chars } = await supabase.from('game_characters').select('*').order('name'); if (chars) setCatalogChars(chars); 
+      const { data: events } = await supabase.from('game_events').select('*').order('title'); if (events) setCatalogEvents(events); 
+      const { data: effects } = await supabase.from('game_status_effects').select('*').order('title'); if (effects) setCatalogEffects(effects); 
+      const { data: skills } = await supabase.from('character_skills').select('*').order('name'); if (skills) setCatalogSkills(skills); // Carrega skills para seleção na facção
+  };
   
   const fetchData = useCallback(async () => { try { setLoading(true); const { data: { user } } = await supabase.auth.getUser(); if (user) { setUserEmail(user.email || ''); setUserId(user.id); const { data: profile } = await supabase.from('profiles').select('username').eq('id', user.id).single(); setUsername(profile?.username || user.email?.split('@')[0] || 'Viajante'); const { data: roster, error } = await supabase.from('user_roster').select(`id, current_level, acquired_at, challenge_completed, game_characters (*)`).eq('user_id', user.id).order('acquired_at', { ascending: false }); if (error) console.log("Erro roster:", error.message); else setPlayedCharacters(roster as any || []); } const { data: vict } = await supabase.from('victories').select('*'); setVictories(vict || []); await fetchCatalogs(); } catch (error: any) { console.log(error); } finally { setLoading(false); setRefreshing(false); } }, []);
   useEffect(() => { fetchData(); }, []);
@@ -221,18 +235,30 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
   const pickEventImage = async () => { const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [16, 9], quality: 0.5, }); if (!result.canceled) { setPickedEventImageUri(result.assets[0].uri); } };
 
   // ==================================================================================
-  // 6. LÓGICA DE EVENTOS
+  // 6. LÓGICA DE EVENTOS (ATUALIZADO)
   // ==================================================================================
   
   const openCreateEventModal = () => { 
       setEditingEventId(null); setNewEventTitle(''); setNewEventDesc(''); setNewEventImage(''); setPickedEventImageUri(''); 
       setEventCharacters([]); 
+      // Reset Faction
+      setIsFactionEvent(false); setEventFactions([]); setNewFactionName(''); setNewFactionSkill(null);
       setCreateEventModalVisible(true); 
   };
   
   const openEditEventModal = (ev: GameEvent) => { 
       setEditingEventId(ev.id); setNewEventTitle(ev.title); setNewEventDesc(ev.description); setNewEventImage(ev.image_url||''); setPickedEventImageUri(''); 
-      setEventCharacters(ev.event_characters || []); 
+      
+      // Carrega dados baseados no tipo
+      setIsFactionEvent(ev.is_faction_event || false);
+      if (ev.is_faction_event) {
+          setEventFactions(ev.factions || []);
+          setEventCharacters([]);
+      } else {
+          setEventCharacters(ev.event_characters || []);
+          setEventFactions([]);
+      }
+      
       setCreateEventModalVisible(true); 
   }
 
@@ -324,8 +350,36 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       }}]);
   }
 
+  // >>>> FUNÇÕES DE FACÇÃO (NOVO) <<<<
+  const handleAddFaction = () => {
+    if (!newFactionName.trim()) return Alert.alert("Erro", "Nome da facção obrigatório.");
+    if (!newFactionSkill) return Alert.alert("Erro", "Selecione uma skill passiva para a facção.");
+
+    const newFaction: Faction = {
+        id: Date.now().toString(), // ID temporário
+        name: newFactionName,
+        skill: newFactionSkill
+    };
+
+    setEventFactions([...eventFactions, newFaction]);
+    setNewFactionName('');
+    setNewFactionSkill(null);
+  };
+
+  const handleRemoveFaction = (id: string) => {
+    setEventFactions(prev => prev.filter(f => f.id !== id));
+  };
+
   const handleSaveEvent = async () => { 
       if(!newEventTitle) return Alert.alert("Erro", "Título obrigatório"); 
+      
+      // Validações por modo
+      if (isFactionEvent) {
+        if (eventFactions.length < 2) return Alert.alert('Erro', 'Crie pelo menos 2 facções para uma guerra.');
+      } else {
+        if (eventCharacters.length === 0) return Alert.alert('Erro', 'Adicione pelo menos 1 inimigo/boss.');
+      }
+
       setSaving(true); 
       try { 
           let finalImageUrl = newEventImage; 
@@ -333,7 +387,9 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
           
           const p = {
               title: newEventTitle, description: newEventDesc, image_url: finalImageUrl||null, 
-              event_characters: eventCharacters 
+              is_faction_event: isFactionEvent, // Flag importante
+              event_characters: isFactionEvent ? null : eventCharacters, // Salva dependendo do modo
+              factions: isFactionEvent ? eventFactions : null
           }; 
           
           if(editingEventId) await supabase.from('game_events').update(p).eq('id',editingEventId); 
@@ -833,7 +889,11 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       <Modal transparent visible={createEventModalVisible} animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
             <View style={[styles.modalContent, {maxHeight: '90%'}]}>
-                <Text style={styles.modalTitle}>{editingEventId ? "Editar Evento" : "Criar Evento"}</Text>
+                <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>{editingEventId ? "Editar Evento" : "Criar Evento"}</Text>
+                    <TouchableOpacity onPress={() => setCreateEventModalVisible(false)}><Ionicons name="close" size={24} color="#fff"/></TouchableOpacity>
+                </View>
+                
                 <ScrollView contentContainerStyle={{paddingBottom: 20}}>
                     <TouchableOpacity onPress={pickEventImage} style={[styles.imagePickerBtn, {height:120}]}>
                         {pickedEventImageUri ? (<Image source={{uri:pickedEventImageUri}} style={styles.imagePreview}/>) : newEventImage ? (<Image source={{uri:newEventImage}} style={styles.imagePreview}/>) : (<View style={{alignItems:'center'}}><Ionicons name="image" size={30} color="#777"/><Text style={{color:'#777', marginTop:5}}>Capa do Evento</Text></View>)}
@@ -841,28 +901,91 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
                     <TextInput style={styles.input} placeholder="Título do Evento" placeholderTextColor="#555" value={newEventTitle} onChangeText={setNewEventTitle}/>
                     <TextInput style={[styles.input, {height:80, textAlignVertical:'top'}]} placeholder="Descrição / Narrativa" placeholderTextColor="#555" value={newEventDesc} onChangeText={setNewEventDesc} multiline/>
                     
-                    {/* LISTA DE PERSONAGENS DO EVENTO */}
-                    <Text style={[styles.sectionHeader, {marginTop:15}]}>Inimigos / Bosses</Text>
-                    {eventCharacters.length === 0 ? (
-                        <Text style={{color:'#777', fontStyle:'italic', marginBottom:10}}>Nenhum inimigo adicionado.</Text>
-                    ) : (
-                        eventCharacters.map((char, idx) => (
-                            <View key={idx} style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', padding:10, backgroundColor:'#2a2a20', borderRadius:6, marginBottom:5, borderLeftWidth:4, borderLeftColor: char.is_boss ? '#ff4444' : '#777'}}>
-                                <View>
-                                    <Text style={{color:'#fff', fontWeight:'bold'}}>{char.name} {char.is_boss ? '(BOSS)' : ''}</Text>
-                                    <Text style={{color:'#aaa', fontSize:10}}>{char.base_hp} HP • {char.skills?.length || 0} Skills</Text>
-                                </View>
-                                <View style={{flexDirection:'row'}}>
-                                    <TouchableOpacity onPress={()=>openEditEventChar(idx)} style={{marginRight:10}}><Ionicons name="pencil" size={18} color="#FFD700" /></TouchableOpacity>
-                                    <TouchableOpacity onPress={()=>removeEventChar(idx)}><Ionicons name="trash" size={18} color="#ff4444" /></TouchableOpacity>
-                                </View>
+                    {/* --- SELETOR DE MODO --- */}
+                    <View style={styles.modeSelector}>
+                        <Text style={{color:'#fff', fontWeight:'bold', marginRight:10}}>TIPO DE EVENTO:</Text>
+                        <View style={{flexDirection:'row', alignItems:'center'}}>
+                            <Text style={{color: !isFactionEvent ? '#00B37E' : '#555', fontSize:12}}>BOSS</Text>
+                            <Switch 
+                                value={isFactionEvent} 
+                                onValueChange={setIsFactionEvent}
+                                trackColor={{false: '#333', true: '#FFD700'}}
+                                thumbColor={isFactionEvent ? '#fff' : '#fff'}
+                                style={{marginHorizontal: 10}}
+                            />
+                            <Text style={{color: isFactionEvent ? '#FFD700' : '#555', fontSize:12}}>FACÇÃO</Text>
+                        </View>
+                    </View>
+
+                    {/* --- CONTEÚDO DINÂMICO --- */}
+                    {isFactionEvent ? (
+                        // --- UI DE FACÇÃO ---
+                        <View style={styles.factionSection}>
+                            <Text style={[styles.sectionTitle, {color:'#FFD700', fontSize:14}]}>GERENCIAR FACÇÕES</Text>
+                            <Text style={{color:'#aaa', fontSize:10, marginBottom:10}}>Crie facções rivais. Jogadores serão sorteados entre elas.</Text>
+                            
+                            <View style={styles.addFactionBox}>
+                                <TextInput 
+                                    style={[styles.input, {marginBottom:5}]} 
+                                    value={newFactionName} 
+                                    onChangeText={setNewFactionName} 
+                                    placeholder="Nome da Facção (ex: Rebeldes)" 
+                                    placeholderTextColor="#555"
+                                />
+                                <TouchableOpacity 
+                                    style={styles.selectSkillBtn} 
+                                    onPress={() => setSelectFactionSkillModalVisible(true)}
+                                >
+                                    <Text style={{color:'#fff', fontSize:12}}>
+                                        {newFactionSkill ? `Skill: ${newFactionSkill.name}` : "SELECIONAR PASSIVA (AURA)"}
+                                    </Text>
+                                    <Ionicons name="caret-down" color="#fff" size={12}/>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity style={styles.addFactionBtn} onPress={handleAddFaction}>
+                                    <Text style={{color:'#000', fontWeight:'bold'}}>+ ADICIONAR FACÇÃO</Text>
+                                </TouchableOpacity>
                             </View>
-                        ))
+
+                            {/* Lista de Facções Adicionadas */}
+                            {eventFactions.map((f, i) => (
+                                <View key={i} style={styles.factionItem}>
+                                    <View>
+                                        <Text style={{color:'#fff', fontWeight:'bold'}}>{f.name}</Text>
+                                        <Text style={{color:'#aaa', fontSize:10}}>Passiva: {f.skill.name}</Text>
+                                    </View>
+                                    <TouchableOpacity onPress={() => handleRemoveFaction(f.id)}>
+                                        <Ionicons name="trash" color="#ff4444" size={18} />
+                                    </TouchableOpacity>
+                                </View>
+                            ))}
+                        </View>
+                    ) : (
+                        // --- UI DE BOSS/MINIONS (Padrão) ---
+                        <View>
+                            <Text style={[styles.sectionHeader, {marginTop:15}]}>Inimigos / Bosses</Text>
+                            {eventCharacters.length === 0 ? (
+                                <Text style={{color:'#777', fontStyle:'italic', marginBottom:10}}>Nenhum inimigo adicionado.</Text>
+                            ) : (
+                                eventCharacters.map((char, idx) => (
+                                    <View key={idx} style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', padding:10, backgroundColor:'#2a2a20', borderRadius:6, marginBottom:5, borderLeftWidth:4, borderLeftColor: char.is_boss ? '#ff4444' : '#777'}}>
+                                        <View>
+                                            <Text style={{color:'#fff', fontWeight:'bold'}}>{char.name} {char.is_boss ? '(BOSS)' : ''}</Text>
+                                            <Text style={{color:'#aaa', fontSize:10}}>{char.base_hp} HP • {char.skills?.length || 0} Skills</Text>
+                                        </View>
+                                        <View style={{flexDirection:'row'}}>
+                                            <TouchableOpacity onPress={()=>openEditEventChar(idx)} style={{marginRight:10}}><Ionicons name="pencil" size={18} color="#FFD700" /></TouchableOpacity>
+                                            <TouchableOpacity onPress={()=>removeEventChar(idx)}><Ionicons name="trash" size={18} color="#ff4444" /></TouchableOpacity>
+                                        </View>
+                                    </View>
+                                ))
+                            )}
+                            
+                            <TouchableOpacity onPress={openAddEventChar} style={[styles.saveButton, {marginTop:5, backgroundColor:'#333', borderWidth:1, borderColor:'#00B37E'}]}>
+                                <Text style={{color:'#00B37E', fontWeight:'bold'}}>+ Adicionar Personagem</Text>
+                            </TouchableOpacity>
+                        </View>
                     )}
-                    
-                    <TouchableOpacity onPress={openAddEventChar} style={[styles.saveButton, {marginTop:5, backgroundColor:'#333', borderWidth:1, borderColor:'#00B37E'}]}>
-                        <Text style={{color:'#00B37E', fontWeight:'bold'}}>+ Adicionar Personagem</Text>
-                    </TouchableOpacity>
 
                 </ScrollView>
                 <View style={{marginTop: 10}}>
@@ -968,6 +1091,37 @@ export default function HomeScreen({ onStartGame }: HomeScreenProps) {
       <Modal transparent visible={manageEffectsModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Buffs & Debuffs</Text><TouchableOpacity onPress={openCreateEffectModal}><Ionicons name="add-circle" size={28} color="#00B37E"/></TouchableOpacity><TouchableOpacity onPress={()=>setManageEffectsModalVisible(false)}><Ionicons name="close" size={24} color="#ccc"/></TouchableOpacity></View><FlatList data={catalogEffects} keyExtractor={i=>i.id} renderItem={({item})=>(<View style={styles.catalogItem}><View style={{flex:1}}><Text style={[styles.catalogName, {color: item.type==='buff'?'#00B37E':'#ff4444'}]}>{item.title}</Text><Text style={styles.catalogOrigin}>{item.type.toUpperCase()}{item.duration ? ` • ${item.duration} Rnds` : ''}</Text></View><TouchableOpacity onPress={()=>openEditEffectModal(item)} style={{marginRight:15}}><Ionicons name="pencil" size={20} color="#8257e5"/></TouchableOpacity><TouchableOpacity onPress={()=>deleteEffect(item.id)}><Ionicons name="trash" size={20} color="red"/></TouchableOpacity></View>)}/></View></View></Modal>
       <Modal transparent visible={createEffectModalVisible} animationType="slide"><View style={styles.modalOverlay}><View style={styles.modalContent}><Text style={styles.modalTitle}>{editingEffectId ? "Editar Efeito" : "Criar Efeito"}</Text><View style={{flexDirection:'row', marginBottom:15}}><TouchableOpacity onPress={()=>setEffectType('buff')} style={[styles.typeBadge, effectType==='buff' && {backgroundColor:'#00B37E', borderColor:'#00B37E'}]}><Text style={styles.typeText}>BUFF (Bom)</Text></TouchableOpacity><TouchableOpacity onPress={()=>setEffectType('debuff')} style={[styles.typeBadge, effectType==='debuff' && {backgroundColor:'#ff4444', borderColor:'#ff4444'}]}><Text style={styles.typeText}>DEBUFF (Ruim)</Text></TouchableOpacity></View><TextInput style={styles.input} placeholder="Título (Ex: Veneno)" placeholderTextColor="#555" value={effectTitle} onChangeText={setEffectTitle}/><TextInput style={styles.input} placeholder="Descrição" placeholderTextColor="#555" value={effectDesc} onChangeText={setEffectDesc}/><TextInput style={styles.input} placeholder="Duração" placeholderTextColor="#555" value={effectDuration} onChangeText={setEffectDuration} keyboardType="numeric"/>{effectType === 'debuff' && (<TextInput style={[styles.input, {borderColor:'#ff4444'}]} placeholder="Dano (Ex: 10)" placeholderTextColor="#555" value={effectDamage} onChangeText={setEffectDamage}/>)}<TouchableOpacity onPress={handleSaveEffect} style={styles.saveButton}><Text style={styles.saveButtonText}>SALVAR</Text></TouchableOpacity><TouchableOpacity onPress={()=>setCreateEffectModalVisible(false)} style={[styles.saveButton,{backgroundColor:'#333', marginTop:10}]}><Text style={styles.saveButtonText}>Cancelar</Text></TouchableOpacity></View></View></Modal>
       <Modal animationType="fade" transparent={true} visible={detailsModalVisible} onRequestClose={() => setDetailsModalVisible(false)}><View style={styles.modalOverlay}><View style={[styles.modalContent, { height: '65%' }]}>{selectedCharacter ? (<View style={{alignItems: 'center'}}>{selectedCharacter.game_characters?.image_url ? <Image source={{uri: selectedCharacter.game_characters.image_url}} style={styles.detailsImageBig} /> : <View style={styles.detailsIconBig}><Text style={{fontSize: 40}}>👤</Text></View>}<Text style={styles.detailsTitle}>{selectedCharacter.game_characters?.name || 'Desconhecido'}</Text><Text style={styles.detailsClass}>{selectedCharacter.game_characters?.base_class}</Text><Text style={[styles.detailsClass, {color: getCategoryColor(selectedCharacter.game_characters?.category), marginTop:5}]}>{selectedCharacter.game_characters?.category?.toUpperCase() || 'INDIVIDUAL'}</Text><View style={styles.levelBigBadge}><Text style={styles.levelLabel}>HP BASE: {selectedCharacter.game_characters?.base_hp}</Text>{(selectedCharacter.game_characters?.base_shield || 0) > 0 && <Text style={[styles.levelLabel, {color:'#44aaff', marginTop:5}]}>ESCUDO: {selectedCharacter.game_characters?.base_shield}</Text>}</View><View style={styles.statsRow}><View style={styles.statBox}><Ionicons name="trophy" size={24} color="#FFD700" /><Text style={styles.statValue}>{selectedCharStats.wins}</Text><Text style={styles.statLabel}>Vitórias (Lv)</Text></View><View style={styles.statBox}><Ionicons name="game-controller" size={24} color="#ccc" /><Text style={styles.statValue}>{selectedCharStats.matches}</Text><Text style={styles.statLabel}>Partidas</Text></View><View style={styles.statBox}><Ionicons name="pie-chart" size={24} color="#8257e5" /><Text style={styles.statValue}>{selectedCharStats.winRate}%</Text><Text style={styles.statLabel}>Taxa</Text></View></View><View style={{flexDirection:'row', alignItems:'center', marginTop:20, backgroundColor:'#222', padding:10, borderRadius:8, width:'100%'}}><Text style={{color:'#fff', flex:1, fontSize:14, marginRight:10}}>Desafio do Personagem Concluído?</Text><TouchableOpacity onPress={() => handleToggleChallenge(selectedCharacter)} style={{width:24, height:24, borderRadius:4, borderWidth:1, borderColor:'#555', alignItems:'center', justifyContent:'center', backgroundColor: selectedCharacter.challenge_completed ? '#00B37E' : 'transparent'}}>{!!selectedCharacter.challenge_completed && <Ionicons name="checkmark" size={18} color="#fff" />}</TouchableOpacity></View>{!!loadingStats && <ActivityIndicator size="small" color="#8257e5" style={{marginTop:10}}/>}<TouchableOpacity style={styles.closeButton} onPress={() => setDetailsModalVisible(false)}><Text style={styles.closeButtonText}>Fechar</Text></TouchableOpacity></View>) : <ActivityIndicator size="large" color="#8257e5"/>}</View></View></Modal>
+      
+      {/* --- MODAL SELEÇÃO DE SKILL (FACÇÃO) --- */}
+      <Modal visible={selectFactionSkillModalVisible} animationType="slide" transparent={true} onRequestClose={() => setSelectFactionSkillModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Passiva da Facção</Text>
+                <Text style={{color:'#aaa', fontSize:12, marginBottom:15}}>Esta passiva será um BUFF para quem é da facção e um DEBUFF para os inimigos.</Text>
+                
+                {/* LISTA DE SKILLS DISPONÍVEIS PARA SELEÇÃO */}
+                <FlatList 
+                    data={catalogSkills.filter(s => s.type === 'passive')} // Só mostra passivas
+                    keyExtractor={item => item.id}
+                    style={{maxHeight: 400}}
+                    renderItem={({item}) => (
+                        <TouchableOpacity 
+                            style={styles.cardItem} 
+                            onPress={() => { setNewFactionSkill(item); setSelectFactionSkillModalVisible(false); }}
+                        >
+                            <Text style={[styles.cardTitle, {color:'#FFD700'}]}>{item.name}</Text>
+                            <Text style={styles.cardDesc}>{item.description}</Text>
+                        </TouchableOpacity>
+                    )}
+                />
+                
+                <TouchableOpacity style={[styles.saveButton, {backgroundColor:'#333', marginTop:10}]} onPress={() => setSelectFactionSkillModalVisible(false)}>
+                    <Text style={{color:'#fff', textAlign:'center'}}>Cancelar</Text>
+                </TouchableOpacity>
+            </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -1020,6 +1174,8 @@ const styles = StyleSheet.create({
   charImage: { width: 45, height: 45, borderRadius: 22.5, marginRight: 15, backgroundColor: '#333' },
   cardTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   cardSubtitle: { color: '#7C7C8A', fontSize: 12 },
+  cardItem: { backgroundColor:'#27272A', padding:15, borderRadius:8, marginBottom:8 },
+  cardDesc: { color: '#aaa', fontSize: 12, marginTop: 4 },
   
   // Modais Genéricos
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', padding: 20 },
@@ -1064,5 +1220,13 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection:'row', justifyContent:'space-around', width:'100%', marginTop:25 },
   statBox: { alignItems:'center', backgroundColor:'#222', padding:10, borderRadius:8, width:'30%' },
   statValue: { color:'#fff', fontWeight:'bold', fontSize:18, marginTop:5 },
-  statLabel: { color:'#777', fontSize:10 }
+  statLabel: { color:'#777', fontSize:10 },
+
+  // Faction Styles (NOVO)
+  modeSelector: { flexDirection:'row', alignItems:'center', justifyContent:'space-between', backgroundColor:'#222', padding:10, borderRadius:8, marginTop:15, borderWidth:1, borderColor:'#555' },
+  factionSection: { marginTop: 20, borderTopWidth:1, borderTopColor:'#333', paddingTop:10 },
+  addFactionBox: { backgroundColor:'#202024', padding:10, borderRadius:8, marginBottom:10 },
+  selectSkillBtn: { backgroundColor:'#333', padding:10, borderRadius:8, marginBottom:10, flexDirection:'row', justifyContent:'space-between', alignItems:'center' },
+  addFactionBtn: { backgroundColor:'#00B37E', padding:10, borderRadius:8, alignItems:'center' },
+  factionItem: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', backgroundColor:'#121214', padding:10, borderRadius:8, marginBottom:5, borderWidth:1, borderColor:'#333' }
 });

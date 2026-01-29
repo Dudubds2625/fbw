@@ -93,7 +93,8 @@ export interface GameEvent {
   boss_skills?: BossSkill[];
   // has_life?: boolean;
   // is_boss?: boolean;
-  
+  is_faction_event?: boolean; // Flag para saber se é esse modo
+    factions?: Faction[];
 }
 
 export interface EventCharacter {
@@ -160,6 +161,7 @@ export interface RoomParticipant {
   
   // Desafio
   challenge_completed?: boolean;
+  assigned_faction_id?: string;
 }
 
 export interface UserRosterItem {
@@ -204,4 +206,10 @@ export interface BossSkill {
     name: string;
     description: string;
     target: 'players_global' | 'self'; // 'players_global' = Ruim para todos, 'self' = Bom para o boss
+}
+
+export interface Faction {
+    id: string;
+    name: string;
+    skill: CharacterSkill; // A skill que define a aura da facção
 }
