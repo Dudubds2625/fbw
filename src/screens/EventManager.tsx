@@ -48,6 +48,9 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   // Lógica de Modos (Checkbox)
   const [isFactionEvent, setIsFactionEvent] = useState(false);
   
+  // NOVA REGRA: 3 Personagens -> 1 Boss
+  const [hasThreeUnitsRule, setHasThreeUnitsRule] = useState(false);
+
   // Dados Complexos
   const [eventFactions, setEventFactions] = useState<LocalFaction[]>([]);
   const [factionCountInput, setFactionCountInput] = useState('4');
@@ -57,7 +60,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   const [hasItems, setHasItems] = useState(false);
   const [eventItems, setEventItems] = useState<EventItem[]>([]);
 
-  // Lógica de Passivas (NOVO)
+  // Lógica de Passivas
   const [hasPassives, setHasPassives] = useState(false);
   const [eventPassives, setEventPassives] = useState<CharacterSkill[]>([]);
 
@@ -65,13 +68,15 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   // 3. STATES DOS SUB-MODAIS
   // ==================================================================================
   
-  // A. Modal Boss
+  // A. Modal Boss/Inimigo
   const [createEventCharModalVisible, setCreateEventCharModalVisible] = useState(false);
   const [editingEventCharIndex, setEditingEventCharIndex] = useState<number | null>(null);
   const [evCharName, setEvCharName] = useState('');
   const [evCharHp, setEvCharHp] = useState('10');
   const [evCharHasLife, setEvCharHasLife] = useState(true);
   const [evCharIsBoss, setEvCharIsBoss] = useState(false);
+  // NOVO STATE PARA O PERSONAGEM
+  const [evCharBecomesBoss, setEvCharBecomesBoss] = useState(false);
   const [evCharSkills, setEvCharSkills] = useState<CharacterSkill[]>([]);
   
   // B. Skill Form (Generico)
@@ -104,7 +109,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   const [itemHasAmmo, setItemHasAmmo] = useState(false);
   const [itemAmmoCount, setItemAmmoCount] = useState('');
 
-  // F. Modal de Passiva (NOVO)
+  // F. Modal de Passiva
   const [createPassiveModalVisible, setCreatePassiveModalVisible] = useState(false);
   const [editingPassiveIndex, setEditingPassiveIndex] = useState<number | null>(null);
   const [passiveName, setPassiveName] = useState('');
@@ -157,10 +162,10 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
       setEditingEventId(null); 
       setNewEventTitle(''); setNewEventDesc(''); setNewEventImage(''); setPickedEventImageUri('');
       setEventCharacters([]); 
-      setIsFactionEvent(false); 
+      setIsFactionEvent(false);
+      setHasThreeUnitsRule(false); // Reset nova regra
       setEventFactions([]); setFactionCountInput('4');
       
-      // Reset Itens e Passivas
       setHasItems(false); setEventItems([]);
       setHasPassives(false); setEventPassives([]);
       
@@ -177,7 +182,9 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
       const isFaction = !!ev.is_faction_event;
       setIsFactionEvent(isFaction);
 
-      // Deep Copy
+      // Carregar regra de 3 unidades
+      setHasThreeUnitsRule(!!ev.has_three_units_boss_rule);
+
       const rawFactions = ev.factions as unknown as LocalFaction[] || [];
       const loadedFactions = JSON.parse(JSON.stringify(rawFactions));
       
@@ -194,12 +201,10 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
           setFactionCountInput('4');
       }
       
-      // Carregar Itens
       const loadedItems = ev.items ? JSON.parse(JSON.stringify(ev.items)) : [];
       setEventItems(loadedItems);
       setHasItems(loadedItems.length > 0);
 
-      // Carregar Passivas
       const loadedPassives = ev.passives ? JSON.parse(JSON.stringify(ev.passives)) : [];
       setEventPassives(loadedPassives);
       setHasPassives(loadedPassives.length > 0);
@@ -237,6 +242,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
               description: newEventDesc, 
               image_url: finalImageUrl || null,
               is_faction_event: currentIsFaction,
+              has_three_units_boss_rule: hasThreeUnitsRule, // <--- NOVA REGRA NO PAYLOAD
               event_characters: finalCharacters,
               factions: finalFactions,
               items: finalItems,
@@ -258,7 +264,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   };
 
   // ==================================================================================
-  // 6. LÓGICA DE ITENS E PASSIVAS (NOVO)
+  // 6. LÓGICA DE ITENS, PASSIVAS, E INIMIGOS
   // ==================================================================================
 
   // --- ITENS ---
@@ -268,7 +274,6 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
       setEditingItemIndex(null);
       setCreateItemModalVisible(true);
   };
-
   const openEditItem = (index: number) => {
       const item = eventItems[index];
       setItemName(item.name); setItemDesc(item.description); setItemDamage(item.damage);
@@ -276,7 +281,6 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
       setEditingItemIndex(index);
       setCreateItemModalVisible(true);
   };
-
   const saveItem = () => {
       if(!itemName || !itemDamage) return Alert.alert("Erro", "Nome e Dano obrigatórios");
       const newItem: EventItem = {
@@ -291,46 +295,26 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   };
 
   // --- PASSIVAS ---
-  const openAddPassive = () => {
-      setPassiveName(''); setPassiveDesc('');
-      setEditingPassiveIndex(null);
-      setCreatePassiveModalVisible(true);
-  };
-
-  const openEditPassive = (index: number) => {
-      const p = eventPassives[index];
-      setPassiveName(p.name); setPassiveDesc(p.description);
-      setEditingPassiveIndex(index);
-      setCreatePassiveModalVisible(true);
-  };
-
+  const openAddPassive = () => { setPassiveName(''); setPassiveDesc(''); setEditingPassiveIndex(null); setCreatePassiveModalVisible(true); };
+  const openEditPassive = (index: number) => { const p = eventPassives[index]; setPassiveName(p.name); setPassiveDesc(p.description); setEditingPassiveIndex(index); setCreatePassiveModalVisible(true); };
   const savePassive = () => {
-      if(!passiveName) return Alert.alert("Erro", "Nome da passiva obrigatório");
+      if(!passiveName) return Alert.alert("Erro", "Nome obrigatório");
       const newPassive: CharacterSkill = {
           id: editingPassiveIndex !== null ? eventPassives[editingPassiveIndex].id : Date.now().toString(),
-          name: passiveName,
-          description: passiveDesc,
-          type: 'passive',
-          passive_type: 'general', // Regra global
-          duration: -1 // Infinito
+          name: passiveName, description: passiveDesc, type: 'passive', passive_type: 'general', duration: -1
       };
-
-      if(editingPassiveIndex !== null) {
-          const updated = [...eventPassives]; updated[editingPassiveIndex] = newPassive; setEventPassives(updated);
-      } else { setEventPassives([...eventPassives, newPassive]); }
+      if(editingPassiveIndex !== null) { const updated = [...eventPassives]; updated[editingPassiveIndex] = newPassive; setEventPassives(updated); } 
+      else { setEventPassives([...eventPassives, newPassive]); }
       setCreatePassiveModalVisible(false);
   };
 
-
-  // ==================================================================================
-  // 7. OUTRAS LÓGICAS (Boss, Factions, Skills)
-  // ==================================================================================
-  
-  // -- BOSS --
+  // --- BOSS/INIMIGOS (COM NOVA REGRA) ---
   const clearSkillForm = () => { setSkillName(''); setSkillDesc(''); setSkillCost(''); setSkillDuration(''); setSkillType('active'); setSkillCombatState('normal'); };
 
   const openAddEventChar = () => {
-      setEvCharName(''); setEvCharHp('10'); setEvCharHasLife(true); setEvCharIsBoss(false); setEvCharSkills([]);
+      setEvCharName(''); setEvCharHp('10'); setEvCharHasLife(true); 
+      setEvCharIsBoss(false); setEvCharBecomesBoss(false); // Reset
+      setEvCharSkills([]);
       setEditingEventCharIndex(null); setEditingEvCharSkillIndex(null); clearSkillForm();
       setCreateEventCharModalVisible(true);
   };
@@ -338,7 +322,9 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   const openEditEventChar = (index: number) => {
       const char = eventCharacters[index];
       setEvCharName(char.name); setEvCharHp(String(char.base_hp)); setEvCharHasLife(char.has_life);
-      setEvCharIsBoss(char.is_boss); setEvCharSkills(char.skills || []);
+      setEvCharIsBoss(char.is_boss); 
+      setEvCharBecomesBoss(!!char.becomes_boss_on_condition); // Carregar estado
+      setEvCharSkills(char.skills || []);
       setEditingEventCharIndex(index); setEditingEvCharSkillIndex(null); clearSkillForm();
       setCreateEventCharModalVisible(true);
   };
@@ -366,7 +352,10 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
       if(!evCharName) return Alert.alert("Ops", "Nome?");
       const charData: EventCharacter = { 
           name: evCharName, base_hp: evCharHasLife ? (parseInt(evCharHp)||0) : 0, 
-          has_life: evCharHasLife, is_boss: evCharIsBoss, skills: evCharSkills 
+          has_life: evCharHasLife, 
+          is_boss: evCharIsBoss, 
+          becomes_boss_on_condition: evCharBecomesBoss, // Salva o novo campo
+          skills: evCharSkills 
       };
       if (editingEventCharIndex !== null) { const up = [...eventCharacters]; up[editingEventCharIndex] = charData; setEventCharacters(up); }
       else { setEventCharacters([...eventCharacters, charData]); }
@@ -405,7 +394,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
   };
 
   // ==================================================================================
-  // 8. RENDERIZAÇÃO
+  // 7. RENDERIZAÇÃO
   // ==================================================================================
 
   return (
@@ -470,6 +459,19 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
                             />
                         </View>
 
+                        {/* NOVA REGRA: 3 UNITS = BOSS */}
+                        {!isFactionEvent && (
+                            <View style={[styles.checkboxContainer, {borderColor: '#ff8800'}]}>
+                                <Text style={styles.checkboxLabel}>Ativar Regra: 3 Inimigos = 1 Boss?</Text>
+                                <Switch 
+                                    value={hasThreeUnitsRule} 
+                                    onValueChange={setHasThreeUnitsRule}
+                                    trackColor={{false: '#333', true: '#ff8800'}} 
+                                    thumbColor={'#fff'} 
+                                />
+                            </View>
+                        )}
+
                         {isFactionEvent ? (
                             <View style={styles.sectionContainer}>
                                 <Text style={[styles.sectionTitle, {color:'#FFD700'}]}>FACÇÕES</Text>
@@ -488,8 +490,14 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
                             <View style={styles.sectionContainer}>
                                 <Text style={[styles.sectionTitle, {color:'#00B37E'}]}>INIMIGOS</Text>
                                 {eventCharacters.map((char, idx) => (
-                                    <View key={idx} style={[styles.listItem, {borderLeftWidth:4, borderLeftColor: char.is_boss ? '#ff4444' : '#777'}]}>
-                                        <View><Text style={{color:'#fff', fontWeight:'bold'}}>{char.name}</Text><Text style={{color:'#aaa', fontSize:10}}>{char.base_hp} HP</Text></View>
+                                    <View key={idx} style={[styles.listItem, {borderLeftWidth:4, borderLeftColor: char.is_boss ? '#ff4444' : (char.becomes_boss_on_condition ? '#ff8800' : '#777')}]}>
+                                        <View>
+                                            <Text style={{color:'#fff', fontWeight:'bold'}}>{char.name}</Text>
+                                            <Text style={{color:'#aaa', fontSize:10}}>
+                                                {char.base_hp} HP
+                                                {char.becomes_boss_on_condition ? ' • [VIRA BOSS]' : ''}
+                                            </Text>
+                                        </View>
                                         <View style={{flexDirection:'row'}}>
                                             <TouchableOpacity onPress={()=>openEditEventChar(idx)} style={{marginRight:10}}><Ionicons name="pencil" size={18} color="#FFD700" /></TouchableOpacity>
                                             <TouchableOpacity onPress={()=>{const u=[...eventCharacters];u.splice(idx,1);setEventCharacters(u)}}><Ionicons name="trash" size={18} color="#ff4444" /></TouchableOpacity>
@@ -525,7 +533,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
                            </View> 
                         )}
 
-                        {/* SECÇÃO DE PASSIVAS (NOVO) */}
+                        {/* SECÇÃO DE PASSIVAS */}
                         <View style={[styles.checkboxContainer, {marginTop: 15, borderColor: '#9b59b6'}]}>
                             <Text style={styles.checkboxLabel}>Adicionar Passivas Globais?</Text>
                             <Switch value={hasPassives} onValueChange={setHasPassives} trackColor={{false: '#333', true: '#9b59b6'}} thumbColor={'#fff'} />
@@ -562,7 +570,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
 
             {/* MODAIS INTERNOS */}
             
-            {/* Modal Boss */}
+            {/* Modal Boss/Inimigo */}
             <Modal transparent visible={createEventCharModalVisible} animationType="fade">
                 <View style={styles.modalOverlay}>
                     <View style={[styles.modalContent, {height:'auto', maxHeight:'90%'}]}>
@@ -571,8 +579,15 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
                             <TextInput style={styles.input} placeholder="Nome" value={evCharName} onChangeText={setEvCharName} placeholderTextColor="#555"/>
                             <View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:10}}>
                                 <View style={{flexDirection:'row', alignItems:'center'}}><Text style={{color:'#fff', marginRight:5}}>Vida?</Text><Switch value={evCharHasLife} onValueChange={setEvCharHasLife}/></View>
-                                <View style={{flexDirection:'row', alignItems:'center'}}><Text style={{color:'#fff', marginRight:5}}>Boss?</Text><Switch value={evCharIsBoss} onValueChange={setEvCharIsBoss}/></View>
+                                <View style={{flexDirection:'row', alignItems:'center'}}><Text style={{color:'#fff', marginRight:5}}>É Boss?</Text><Switch value={evCharIsBoss} onValueChange={setEvCharIsBoss}/></View>
                             </View>
+
+                            {/* NOVA CHECKBOX: VIRA BOSS */}
+                            <View style={[styles.checkboxContainer, {padding: 10, marginBottom: 10}]}>
+                                <Text style={{color:'#fff', fontSize:12, flex:1}}>Vira Boss na condição?</Text>
+                                <Switch value={evCharBecomesBoss} onValueChange={setEvCharBecomesBoss} trackColor={{false:'#333', true:'#ff8800'}}/>
+                            </View>
+
                             {evCharHasLife && <TextInput style={styles.input} placeholder="HP" value={evCharHp} onChangeText={setEvCharHp} keyboardType="numeric"/>}
                             
                             <View style={styles.skillForm}>
@@ -643,7 +658,7 @@ export default function EventManager({ visible, onClose }: EventManagerProps) {
                 </View>
             </Modal>
 
-             {/* MODAL DE PASSIVA (NOVO) */}
+             {/* MODAL DE PASSIVA */}
              <Modal transparent visible={createPassiveModalVisible} animationType="fade">
                 <View style={styles.modalOverlay}>
                     <View style={[styles.modalContent, {height:'auto'}]}>

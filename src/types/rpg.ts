@@ -106,7 +106,9 @@ export interface GameEvent {
   is_faction_event?: boolean; // Flag para saber se é esse modo
   factions?: Faction[];
   items?: EventItem[]; // <--- Adiciona esta linha
-  passives?: CharacterSkill[]; // <--- Adiciona esta linha
+  passives?: CharacterSkill[]; // <--- Adiciona es
+  // ta linha
+  has_three_units_boss_rule?: boolean; // <--- NOVO
 }
 
 export interface EventItem {
@@ -124,6 +126,8 @@ export interface EventCharacter {
   has_life: boolean;
   is_boss: boolean; // Flag para destacar visualmente
   skills: CharacterSkill[]; // Reutiliza a estrutura de skills (Ativas/Passivas)
+    becomes_boss_on_condition?: boolean; // <--- NOVO
+
 }
 
 export interface Room {
