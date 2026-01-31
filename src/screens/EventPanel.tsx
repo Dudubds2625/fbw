@@ -1,372 +1,270 @@
-import React, { useState } from 'react';
-import { 
-    View, Text, StyleSheet, Image, ScrollView, TouchableOpacity, 
-    TextInput, Alert, Modal, FlatList, KeyboardAvoidingView, Platform 
-} from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { GameEvent, BossSkill, RoomParticipant, GameCharacter } from '../types/rpg';
-
-export interface EventMinion {
-    id: string;
-    original_id: string;
-    name: string;
-    current_hp: number;
-    max_hp: number;
-    image_url?: string;
-}
-
-export interface EventState {
-    current_hp: number;
-    max_hp: number;
-    name: string;
-    image_url?: string;
-    boss_skills?: BossSkill[];
-    minions?: EventMinion[];
-}
+import { supabase } from '../lib/supabase';
+import { GameEvent, EventCharacter, Room, CharacterSkill } from '../types/rpg';
 
 interface EventPanelProps {
-    gameEvent: GameEvent | null;
-    eventState: EventState | null;
-    participants: RoomParticipant[];
-    allCharacters: GameCharacter[];
-    onUpdateEventState: (newState: EventState) => void;
-    onBossAttack: (targetId: string, damage: number) => void;
-    onGoBack: () => void;
+  room: Room | null;
 }
 
-export default function EventPanel({ 
-    gameEvent, 
-    eventState, 
-    participants, 
-    allCharacters,
-    onUpdateEventState, 
-    onBossAttack,
-    onGoBack 
-}: EventPanelProps) {
+export default function EventPanel({ room }: EventPanelProps) {
+  const [eventData, setEventData] = useState<GameEvent | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [localEnemies, setLocalEnemies] = useState<any[]>([]);
+  
+  // TRAVA DE SEGURANÇA (Essencial para evitar o "ghosting")
+  const isEditingRef = useRef(false);
+  const editTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 1. Sincronização (Só atualiza se NÃO estivermos editando/invocando)
+  useEffect(() => {
+    if (isEditingRef.current) return; // Se a trava estiver ativa, ignora o servidor temporariamente
+
+    if (room?.event_state?.active_enemies) {
+        setLocalEnemies(room.event_state.active_enemies);
+    } else {
+        setLocalEnemies([]);
+    }
+  }, [room?.event_state]);
+
+  useEffect(() => {
+    if (room?.selected_event_id) {
+      loadEventData(room.selected_event_id);
+    }
+  }, [room?.selected_event_id]);
+
+  const loadEventData = async (id: string) => {
+    setLoading(true);
+    const { data } = await supabase.from('game_events').select('*').eq('id', id).single();
+    if (data) setEventData(data);
+    setLoading(false);
+  };
+
+  const saveToSupabase = async (enemiesList: any[]) => {
+    if (!room) return;
+    const newState = { ...room.event_state, active_enemies: enemiesList };
+    await supabase.from('rooms').update({ event_state: newState }).eq('code', room.code);
+  };
+
+  // --- LÓGICA DE PASSIVAS ---
+  const applyGlobalPassives = async (char: EventCharacter) => {
+      const globalPassives = char.skills?.filter(s => s.type === 'passive' && (s.passive_type === 'general' || s.passive_type === 'general_transformed'));
+      if (!globalPassives || globalPassives.length === 0) return;
+
+      const { data: participants } = await supabase.from('room_participants').select('*').eq('room_code', room?.code);
+      if (!participants) return;
+
+      let appliedCount = 0;
+      for (const p of participants) {
+          let updatedDebuffs = [...(p.active_debuffs || [])];
+          let changed = false;
+          globalPassives.forEach(skill => {
+              if (!updatedDebuffs.some(d => d.name === skill.name)) {
+                  updatedDebuffs.push({ name: skill.name, description: skill.description, duration: -1, damage: skill.damage });
+                  changed = true;
+              }
+          });
+          if (changed) {
+              await supabase.from('room_participants').update({ active_debuffs: updatedDebuffs }).eq('id', p.id);
+              appliedCount++;
+          }
+      }
+      if (appliedCount > 0) Alert.alert("Efeito Global", `Passivas de ${char.name} aplicadas!`);
+  };
+
+  const removeGlobalPassives = async (enemy: any) => {
+      const globalPassives = enemy.skills?.filter((s: any) => s.type === 'passive' && (s.passive_type === 'general' || s.passive_type === 'general_transformed'));
+      if (!globalPassives || globalPassives.length === 0) return;
+
+      const { data: participants } = await supabase.from('room_participants').select('*').eq('room_code', room?.code);
+      if (!participants) return;
+
+      for (const p of participants) {
+          if (!p.active_debuffs) continue;
+          const originalLength = p.active_debuffs.length;
+          const updatedDebuffs = p.active_debuffs.filter((d: any) => !globalPassives.some((s: any) => s.name === d.name));
+
+          if (updatedDebuffs.length !== originalLength) {
+              await supabase.from('room_participants').update({ active_debuffs: updatedDebuffs }).eq('id', p.id);
+          }
+      }
+  };
+
+  // --- AÇÕES COM TRAVA (CORREÇÃO DO GHOSTING) ---
+
+  const activateLock = () => {
+      isEditingRef.current = true;
+      if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
+      // Mantém a trava por 2.5 segundos para garantir que o servidor atualizou
+      editTimeoutRef.current = setTimeout(() => { isEditingRef.current = false; }, 2500);
+  };
+
+  const handleSummon = async (template: EventCharacter) => {
+    // 1. Ativa a trava IMEDIATAMENTE
+    activateLock();
+
+    const newEnemy = {
+      ...template,
+      instanceId: `${template.name}_${Date.now()}_${Math.floor(Math.random()*1000)}`,
+      current_hp: template.base_hp,
+      max_hp: template.base_hp,
+      skills: template.skills || [] 
+    };
+
+    // 2. Atualiza Local
+    const updatedList = [...localEnemies, newEnemy];
+    setLocalEnemies(updatedList);
     
-    const [bossAttackDamage, setBossAttackDamage] = useState('10');
-    const [bossTargetId, setBossTargetId] = useState<string | null>(null);
-    const [summonModalVisible, setSummonModalVisible] = useState(false);
+    // 3. Salva e Aplica Passivas
+    saveToSupabase(updatedList);
+    await applyGlobalPassives(template);
+  };
 
-    // --- NOVOS STATES PARA EDIÇÃO ---
-    const [editMinionModalVisible, setEditMinionModalVisible] = useState(false);
-    const [editingMinionIndex, setEditingMinionIndex] = useState<number | null>(null);
-    const [editMinionName, setEditMinionName] = useState('');
-    const [editMinionCurHp, setEditMinionCurHp] = useState('');
-    const [editMinionMaxHp, setEditMinionMaxHp] = useState('');
+  const handleRemove = async (enemy: any) => {
+    // 1. Ativa a trava
+    activateLock();
 
-    // Fallbacks de Dados
-    const displayTitle = eventState?.name || gameEvent?.title || "Evento";
-    const displayImage = eventState?.image_url || gameEvent?.image_url;
+    const updatedList = localEnemies.filter((e: any) => e.instanceId !== enemy.instanceId);
+    setLocalEnemies(updatedList);
     
-    const skills = (eventState?.boss_skills && eventState.boss_skills.length > 0)
-        ? eventState.boss_skills 
-        : (gameEvent?.boss_skills || []);
+    saveToSupabase(updatedList);
+    await removeGlobalPassives(enemy);
+  };
 
-    const minions = eventState?.minions || [];
+  const handleChangeHp = (instanceId: string, amount: number) => {
+      const enemyIndex = localEnemies.findIndex(e => e.instanceId === instanceId);
+      if (enemyIndex === -1) return;
+      const enemy = localEnemies[enemyIndex];
+      const newHp = Math.max(0, Math.min(enemy.max_hp, enemy.current_hp + amount));
 
-    const handleAttack = () => {
-        if (!bossTargetId) return Alert.alert("Ops", "Selecione um alvo.");
-        const dmg = parseInt(bossAttackDamage);
-        if (isNaN(dmg) || dmg <= 0) return Alert.alert("Ops", "Dano inválido.");
-        onBossAttack(bossTargetId, dmg);
-    };
+      // Se morreu, remove
+      if (newHp <= 0) {
+          handleRemove(enemy);
+          return; 
+      }
 
-    const changeBossHp = (amount: number) => {
-        if (!eventState) return;
-        const newHp = Math.max(0, Math.min(eventState.max_hp, eventState.current_hp + amount));
-        onUpdateEventState({ ...eventState, current_hp: newHp });
-    };
+      // Se está vivo, atualiza com trava
+      activateLock();
 
-    const handleSummonMinion = (char: GameCharacter) => {
-        if (!eventState) return;
-        const newMinion: EventMinion = {
-            id: Date.now().toString(),
-            original_id: char.id,
-            name: char.name,
-            current_hp: char.base_hp || 10,
-            max_hp: char.base_hp || 10,
-            image_url: char.image_url
-        };
-        const currentMinions = eventState.minions || [];
-        onUpdateEventState({ 
-            ...eventState, 
-            minions: [...currentMinions, newMinion] 
-        });
-        setSummonModalVisible(false);
-    };
+      const updatedList = [...localEnemies];
+      updatedList[enemyIndex] = { ...enemy, current_hp: newHp };
+      
+      setLocalEnemies(updatedList);
+      
+      // Debounce do save (espera o usuário parar de clicar)
+      // Nota: o activateLock já lida com o timeout da trava visual
+      saveToSupabase(updatedList);
+  };
 
-    // --- FUNÇÕES DE EDIÇÃO DO MINION ---
-    const openEditMinion = (index: number) => {
-        const m = eventState?.minions?.[index];
-        if (!m) return;
-        setEditingMinionIndex(index);
-        setEditMinionName(m.name);
-        setEditMinionCurHp(String(m.current_hp));
-        setEditMinionMaxHp(String(m.max_hp));
-        setEditMinionModalVisible(true);
-    };
+  const handleShowSkillInfo = (skill: CharacterSkill) => {
+      const typeLabel = (skill.passive_type === 'general' || skill.passive_type === 'general_transformed') ? "🌍 EFEITO GLOBAL" : "🛡️ BUFF INDIVIDUAL";
+      Alert.alert(skill.name.toUpperCase(), `${typeLabel}\n\n${skill.description}`);
+  };
 
-    const saveMinionEdit = () => {
-        if (editingMinionIndex === null || !eventState?.minions) return;
-        
-        const newMinions = [...eventState.minions];
-        const updatedMinion = { ...newMinions[editingMinionIndex] };
+  // --- RENDER ---
+  if (!room) return <View style={styles.center}><ActivityIndicator size="large" color="#8257e5"/></View>;
+  if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#8257e5"/></View>;
+  if (!eventData) return <View style={styles.center}><Text style={styles.text}>Sem evento.</Text></View>;
 
-        const newCur = parseInt(editMinionCurHp);
-        const newMax = parseInt(editMinionMaxHp);
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>{eventData.title}</Text>
 
-        if (!editMinionName) return Alert.alert("Erro", "Nome obrigatório");
-        if (isNaN(newCur) || isNaN(newMax)) return Alert.alert("Erro", "HP deve ser numérico");
-
-        updatedMinion.name = editMinionName;
-        updatedMinion.current_hp = Math.max(0, newCur);
-        updatedMinion.max_hp = Math.max(1, newMax);
-
-        // Garante que o HP atual não passe do máximo (opcional, mas recomendado)
-        if (updatedMinion.current_hp > updatedMinion.max_hp) {
-            updatedMinion.current_hp = updatedMinion.max_hp;
-        }
-
-        newMinions[editingMinionIndex] = updatedMinion;
-        onUpdateEventState({ ...eventState, minions: newMinions });
-        setEditMinionModalVisible(false);
-    };
-
-    const changeMinionHp = (minionIndex: number, amount: number) => {
-        if (!eventState || !eventState.minions) return;
-        const newMinions = [...eventState.minions];
-        const minion = { ...newMinions[minionIndex] };
-        const newHp = Math.max(0, Math.min(minion.max_hp, minion.current_hp + amount));
-        
-        if (newHp === 0) {
-            Alert.alert("Baixa", `${minion.name} derrotado. Remover?`, [
-                { text: "Não (0 HP)", onPress: () => { minion.current_hp = 0; newMinions[minionIndex] = minion; onUpdateEventState({ ...eventState, minions: newMinions }); }},
-                { text: "Sim", onPress: () => { newMinions.splice(minionIndex, 1); onUpdateEventState({ ...eventState, minions: newMinions }); }}
-            ]);
-        } else {
-            minion.current_hp = newHp;
-            newMinions[minionIndex] = minion;
-            onUpdateEventState({ ...eventState, minions: newMinions });
-        }
-    };
-
-    if (!eventState && !gameEvent) return (
-        <View style={styles.container}>
-            <View style={styles.header}>
-                <TouchableOpacity onPress={onGoBack}><Ionicons name="arrow-back" size={24} color="#ccc" /></TouchableOpacity>
-                <Text style={styles.title}>Evento</Text>
-            </View>
-            <View style={{flex:1, justifyContent:'center', alignItems:'center'}}>
-                <Text style={styles.emptyText}>Nenhum evento ativo.</Text>
-            </View>
+      <View style={styles.field}>
+        <View style={styles.sectionHeader}>
+            <Text style={styles.subtitle}>CAMPO DE BATALHA ({localEnemies.length})</Text>
+            {localEnemies.length > 0 && <Ionicons name="flame" size={16} color="#ff4444" />}
         </View>
-    );
-
-    return (
-        <View style={styles.container}>
-            <View style={styles.header}>
-                <TouchableOpacity onPress={onGoBack} style={styles.backButton}>
-                    <Ionicons name="arrow-back" size={24} color="#ccc" />
-                    <Text style={{color:'#ccc', marginLeft:5}}>Mesa</Text>
-                </TouchableOpacity>
-                <Text style={styles.title}>{displayTitle}</Text>
-                <View style={{width: 60}} /> 
-            </View>
-
-            <ScrollView contentContainerStyle={styles.scrollContent}>
-                {displayImage && <Image source={{ uri: displayImage }} style={styles.image} resizeMode='cover' />}
-
-                {/* BOSS CARD */}
-                {eventState ? (
-                    <View style={styles.bossCard}>
-                        <Text style={styles.bossName}>{eventState.name.toUpperCase()}</Text>
-                        <View style={styles.hpRow}>
-                             <TouchableOpacity onPress={() => changeBossHp(-10)} style={[styles.miniBtn, {backgroundColor:'#330000'}]}><Text style={{color:'#ff4444'}}>-10</Text></TouchableOpacity>
-                             <TouchableOpacity onPress={() => changeBossHp(-1)} style={[styles.miniBtn, {backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={20} color="#fff"/></TouchableOpacity>
-                             <View style={{alignItems:'center', minWidth: 60}}>
-                                 <Text style={styles.hpValue}>{eventState.current_hp}</Text>
-                                 <Text style={{color:'#777', fontSize:10}}>de {eventState.max_hp}</Text>
-                             </View>
-                             <TouchableOpacity onPress={() => changeBossHp(1)} style={[styles.miniBtn, {backgroundColor:'#00B37E'}]}><Ionicons name="add" size={20} color="#fff"/></TouchableOpacity>
-                             <TouchableOpacity onPress={() => changeBossHp(10)} style={[styles.miniBtn, {backgroundColor:'#003300'}]}><Text style={{color:'#00B37E'}}>+10</Text></TouchableOpacity>
+        
+        {localEnemies.length === 0 ? (
+            <View style={styles.emptyBox}><Text style={styles.emptyText}>Campo vazio.</Text></View>
+        ) : (
+            <ScrollView style={{maxHeight: 320}}>
+                {localEnemies.map((enemy: any) => (
+                    <View key={enemy.instanceId} style={styles.card}>
+                        <View style={styles.cardHeader}>
+                            <Text style={styles.cardName}>{enemy.name}</Text>
+                            <TouchableOpacity onPress={() => handleRemove(enemy)} style={styles.removeBtn}>
+                                <Ionicons name="close" size={20} color="#ff4444" />
+                            </TouchableOpacity>
                         </View>
-                        <View style={styles.hpBarBg}><View style={[styles.hpBarFill, {width: `${Math.min(100, Math.max(0, (eventState.current_hp/eventState.max_hp)*100))}%`}]} /></View>
-
-                        <View style={styles.attackSection}>
-                            <Text style={styles.sectionLabel}>ATACAR JOGADOR:</Text>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}}>
-                                {participants.map(p => (
-                                    <TouchableOpacity key={p.id} onPress={() => setBossTargetId(p.id)} style={[styles.targetChip, bossTargetId === p.id && {backgroundColor:'#ff4444', borderColor:'#ff4444'}]}>
-                                        <Text style={{color:'#fff', fontSize:12, fontWeight: bossTargetId === p.id ? 'bold' : 'normal'}}>{p.username}</Text>
-                                    </TouchableOpacity>
-                                ))}
-                            </ScrollView>
-                            <View style={{flexDirection:'row', alignItems:'center'}}>
-                                <TextInput style={styles.input} value={bossAttackDamage} onChangeText={setBossAttackDamage} keyboardType='numeric' placeholder="Dano" placeholderTextColor="#777" />
-                                <TouchableOpacity style={styles.attackBtn} onPress={handleAttack}><Text style={{color:'#fff', fontWeight:'bold', fontSize:12}}>ATACAR</Text></TouchableOpacity>
-                            </View>
+                        <View style={styles.hpInfo}>
+                            <View style={styles.hpBarBg}><View style={[styles.hpBarFill, { width: `${Math.min(100, (enemy.current_hp / enemy.max_hp) * 100)}%` }]} /></View>
+                            <Text style={styles.hpText}>{enemy.current_hp} / {enemy.max_hp} HP</Text>
                         </View>
-                    </View>
-                ) : <Text style={styles.emptyText}>Carregando Boss...</Text>}
-
-                {/* MINIONS */}
-                {eventState && (
-                    <View style={{marginTop: 20}}>
-                        <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
-                            <Text style={styles.sectionLabel}>ALIADOS ({minions.length})</Text>
-                            <TouchableOpacity onPress={() => setSummonModalVisible(true)} style={styles.summonBtn}><Ionicons name="person-add" size={16} color="#000" /><Text style={styles.summonBtnText}> INVOCAR</Text></TouchableOpacity>
+                        <View style={styles.controlsRow}>
+                            <TouchableOpacity onPress={() => handleChangeHp(enemy.instanceId, -10)} style={[styles.ctrlBtn, {backgroundColor: '#330000'}]}><Text style={[styles.ctrlText, {color: '#ff4444'}]}>-10</Text></TouchableOpacity>
+                            <TouchableOpacity onPress={() => handleChangeHp(enemy.instanceId, -1)} style={[styles.ctrlBtn, {backgroundColor: '#ff4444'}]}><Ionicons name="remove" size={16} color="#fff" /></TouchableOpacity>
+                            <View style={{width: 15}} />
+                            <TouchableOpacity onPress={() => handleChangeHp(enemy.instanceId, 1)} style={[styles.ctrlBtn, {backgroundColor: '#00B37E'}]}><Ionicons name="add" size={16} color="#fff" /></TouchableOpacity>
+                            <TouchableOpacity onPress={() => handleChangeHp(enemy.instanceId, 10)} style={[styles.ctrlBtn, {backgroundColor: '#003300'}]}><Text style={[styles.ctrlText, {color: '#00B37E'}]}>+10</Text></TouchableOpacity>
                         </View>
-                        {minions.map((minion, idx) => (
-                            <View key={minion.id} style={styles.minionCard}>
-                                <View style={{flexDirection:'row', alignItems:'center', flex:1}}>
-                                    {minion.image_url ? <Image source={{ uri: minion.image_url }} style={styles.minionThumb} /> : <View style={[styles.minionThumb, {backgroundColor:'#333'}]} />}
-                                    <View>
-                                        <Text style={styles.minionName}>{minion.name}</Text>
-                                        {/* Botão de Editar Adicionado Aqui */}
-                                        <TouchableOpacity onPress={() => openEditMinion(idx)} style={{flexDirection:'row', alignItems:'center', marginTop:2}}>
-                                             <Ionicons name="pencil" size={12} color="#FFD700" style={{marginRight:4}}/>
-                                             <Text style={{color:'#FFD700', fontSize:10}}>Editar</Text>
+                        {enemy.skills && enemy.skills.length > 0 && (
+                            <View style={styles.passivesContainer}>
+                                {enemy.skills.filter((s: any) => s.type === 'passive').map((skill: any, idx: number) => {
+                                    const isGlobal = skill.passive_type === 'general' || skill.passive_type === 'general_transformed';
+                                    return (
+                                        <TouchableOpacity key={idx} style={[styles.passiveBadge, { borderColor: isGlobal ? '#ff4444' : '#00B37E' }]} onPress={() => handleShowSkillInfo(skill)}>
+                                            <Ionicons name={isGlobal ? "skull" : "shield"} size={10} color={isGlobal ? '#ff4444' : '#00B37E'} style={{marginRight: 4}}/>
+                                            <Text style={{color: '#ccc', fontSize: 10, fontWeight: 'bold'}}>{skill.name}</Text>
                                         </TouchableOpacity>
-                                    </View>
-                                </View>
-                                <View style={styles.minionControls}>
-                                    <TouchableOpacity onPress={() => changeMinionHp(idx, -5)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#330000', marginRight:2}]}><Text style={{color:'#ff4444', fontSize:9}}>-5</Text></TouchableOpacity>
-                                    <TouchableOpacity onPress={() => changeMinionHp(idx, -1)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#ff4444'}]}><Ionicons name="remove" size={12} color="#fff"/></TouchableOpacity>
-                                    
-                                    {/* Exibição do HP */}
-                                    <View style={{alignItems:'center', minWidth: 35}}>
-                                        <Text style={styles.minionHp}>{minion.current_hp}</Text>
-                                        <Text style={{color:'#555', fontSize:8}}>/{minion.max_hp}</Text>
-                                    </View>
-                                    
-                                    <TouchableOpacity onPress={() => changeMinionHp(idx, 1)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#00B37E'}]}><Ionicons name="add" size={12} color="#fff"/></TouchableOpacity>
-                                    <TouchableOpacity onPress={() => changeMinionHp(idx, 5)} style={[styles.miniBtn, {width:24, height:24, backgroundColor:'#003300', marginLeft:2}]}><Text style={{color:'#00B37E', fontSize:9}}>+5</Text></TouchableOpacity>
-                                </View>
+                                    );
+                                })}
                             </View>
-                        ))}
+                        )}
                     </View>
-                )}
-
-                {/* SKILLS */}
-                {skills.length > 0 && (
-                    <View style={{marginTop:10}}>
-                        <Text style={styles.sectionLabel}>HABILIDADES</Text>
-                        {skills.map((skill: BossSkill, idx: number) => (
-                            <View key={idx} style={styles.skillCard}>
-                                <Text style={styles.skillName}>{skill.name}</Text>
-                                <Text style={styles.skillDesc}>{skill.description}</Text>
-                                <Text style={[styles.skillTarget, {color: skill.target==='self'?'#00B37E':'#ff4444'}]}>
-                                    {skill.target === 'self' ? 'Buff Próprio' : 'Afeta Jogadores'}
-                                </Text>
-                            </View>
-                        ))}
-                    </View>
-                )}
+                ))}
             </ScrollView>
+        )}
+      </View>
 
-            {/* MODAL DE INVOCAR (JÁ EXISTENTE) */}
-            <Modal visible={summonModalVisible} animationType="slide" transparent={true} onRequestClose={() => setSummonModalVisible(false)}>
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>INVOCAR REFORÇO</Text>
-                            <TouchableOpacity onPress={() => setSummonModalVisible(false)}><Ionicons name="close" size={24} color="#fff"/></TouchableOpacity>
+      <View style={styles.summonArea}>
+        <Text style={[styles.subtitle, {color:'#00B37E', marginBottom: 10}]}>BESTIÁRIO</Text>
+        <ScrollView>
+            {eventData.event_characters && eventData.event_characters.length > 0 ? (
+                eventData.event_characters.map((char, i) => (
+                    <TouchableOpacity key={i} style={styles.summonRow} onPress={() => handleSummon(char)}>
+                        <View style={{flexDirection:'row', alignItems:'center'}}>
+                            <View style={styles.iconBox}><Ionicons name="person" size={14} color="#fff" /></View>
+                            <Text style={{color:'#fff', fontWeight:'bold', marginLeft: 10}}>{char.name}</Text>
                         </View>
-                        <FlatList 
-                            data={allCharacters}
-                            keyExtractor={(item) => item.id}
-                            renderItem={({item}) => (
-                                <TouchableOpacity style={styles.charItem} onPress={() => handleSummonMinion(item)}>
-                                    {item.image_url ? <Image source={{ uri: item.image_url }} style={styles.charItemImg} /> : <View style={[styles.charItemImg, {backgroundColor:'#333'}]}/>}
-                                    <View>
-                                        <Text style={styles.charItemName}>{item.name}</Text>
-                                        <Text style={{color:'#777', fontSize:12}}>HP Base: {item.base_hp}</Text>
-                                    </View>
-                                    <Ionicons name="add-circle" size={24} color="#FFD700" style={{marginLeft:'auto'}}/>
-                                </TouchableOpacity>
-                            )}
-                        />
-                    </View>
-                </View>
-            </Modal>
-
-            {/* NOVO MODAL DE EDIÇÃO */}
-            <Modal visible={editMinionModalVisible} animationType="fade" transparent={true} onRequestClose={() => setEditMinionModalVisible(false)}>
-                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-                    <View style={[styles.modalContent, {maxHeight: 'auto'}]}>
-                        <Text style={styles.modalTitle}>EDITAR PERSONAGEM</Text>
-                        
-                        <Text style={styles.label}>Nome:</Text>
-                        <TextInput style={styles.inputModal} value={editMinionName} onChangeText={setEditMinionName} placeholder="Nome" placeholderTextColor="#555"/>
-                        
-                        <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                            <View style={{flex:1, marginRight:5}}>
-                                <Text style={styles.label}>HP Atual:</Text>
-                                <TextInput style={styles.inputModal} value={editMinionCurHp} onChangeText={setEditMinionCurHp} keyboardType="numeric"/>
-                            </View>
-                            <View style={{flex:1, marginLeft:5}}>
-                                <Text style={styles.label}>HP Máximo:</Text>
-                                <TextInput style={styles.inputModal} value={editMinionMaxHp} onChangeText={setEditMinionMaxHp} keyboardType="numeric"/>
-                            </View>
-                        </View>
-
-                        <View style={{flexDirection:'row', marginTop:15}}>
-                            <TouchableOpacity onPress={saveMinionEdit} style={[styles.attackBtn, {flex:1, backgroundColor:'#00B37E', marginRight:5}]}>
-                                <Text style={{color:'#fff', fontWeight:'bold', textAlign:'center'}}>SALVAR</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={() => setEditMinionModalVisible(false)} style={[styles.attackBtn, {flex:1, backgroundColor:'#333', marginLeft:5}]}>
-                                <Text style={{color:'#fff', fontWeight:'bold', textAlign:'center'}}>CANCELAR</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                </KeyboardAvoidingView>
-            </Modal>
-
-        </View>
-    );
+                        <Text style={{color:'#aaa', fontSize:10}}>{char.base_hp} HP Max</Text>
+                    </TouchableOpacity>
+                ))
+            ) : (
+                <Text style={styles.emptyText}>Sem inimigos.</Text>
+            )}
+        </ScrollView>
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#121214' },
-    header: { flexDirection:'row', alignItems:'center', justifyContent:'space-between', padding:15, backgroundColor:'#202024', paddingTop: 20 },
-    backButton: { flexDirection:'row', alignItems:'center', padding: 5 },
-    title: { color:'#FFD700', fontSize: 18, fontWeight:'bold' },
-    emptyText: { color:'#777', textAlign:'center', marginTop:20 },
-    scrollContent: { padding: 20, paddingBottom: 50 },
-    image: { width: '100%', height: 160, borderRadius: 12, marginBottom: 15, borderWidth:1, borderColor:'#333' },
-    bossCard: { backgroundColor: '#222', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#ff4444' },
-    bossName: { color: '#ff4444', fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 15 },
-    hpRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-    miniBtn: { width: 35, height: 35, borderRadius: 17.5, alignItems: 'center', justifyContent: 'center' },
-    hpValue: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
-    hpBarBg: { height: 6, backgroundColor: '#444', borderRadius: 3, overflow: 'hidden', marginBottom: 15 },
-    hpBarFill: { height: '100%', backgroundColor: '#ff4444' },
-    attackSection: { marginTop: 10, borderTopWidth:1, borderTopColor:'#444', paddingTop:10 },
-    sectionLabel: { color:'#ccc', marginBottom:8, fontWeight:'bold', fontSize: 10, letterSpacing:1 },
-    targetChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 15, borderWidth: 1, borderColor: '#555', marginRight: 6, backgroundColor:'#333' },
-    input: { flex: 1, backgroundColor: '#121214', color: '#fff', padding: 8, borderRadius: 8, marginRight: 10, borderWidth: 1, borderColor: '#444', height: 40 },
-    attackBtn: { backgroundColor: '#ff4444', paddingHorizontal: 15, borderRadius: 8, justifyContent:'center', height: 40 },
-    skillCard: { backgroundColor: '#2a2a2a', padding: 10, borderRadius: 8, marginBottom: 6, borderLeftWidth: 3, borderLeftColor: '#8257e5' },
-    skillName: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
-    skillDesc: { color: '#ccc', marginTop: 2, fontSize: 12 },
-    skillTarget: { marginTop: 4, fontSize: 8, fontWeight: 'bold', textTransform: 'uppercase' },
-    summonBtn: { flexDirection:'row', alignItems:'center', backgroundColor:'#FFD700', paddingHorizontal:8, paddingVertical:4, borderRadius:12 },
-    summonBtnText: { color:'#000', fontSize:10, fontWeight:'bold' },
-    minionCard: { flexDirection:'row', alignItems:'center', justifyContent:'space-between', backgroundColor:'#18181B', padding:8, borderRadius:8, marginBottom:8, borderWidth:1, borderColor:'#333' },
-    minionThumb: { width: 30, height: 30, borderRadius: 15, marginRight: 10 },
-    minionName: { color:'#fff', fontWeight:'bold', fontSize:14 },
-    minionControls: { flexDirection:'row', alignItems:'center' },
-    minionHp: { color:'#fff', fontWeight:'bold', fontSize:16, marginHorizontal:2 },
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding:20 },
-    modalContent: { backgroundColor: '#18181B', borderRadius: 12, padding: 20, maxHeight: '80%', borderWidth:1, borderColor:'#8257e5' },
-    modalHeader: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:15, borderBottomWidth:1, borderColor:'#333', paddingBottom:10 },
-    modalTitle: { color:'#FFD700', fontSize:18, fontWeight:'bold', marginBottom: 15, textAlign:'center' },
-    charItem: { flexDirection:'row', alignItems:'center', padding:10, borderBottomWidth:1, borderColor:'#333' },
-    charItemImg: { width:40, height:40, borderRadius:20, marginRight:10 },
-    charItemName: { color:'#fff', fontWeight:'bold' },
-    
-    // Novos estilos para o Modal
-    label: { color:'#ccc', fontSize:12, marginBottom:5 },
-    inputModal: { backgroundColor:'#222', color:'#fff', borderWidth:1, borderColor:'#444', borderRadius:8, padding:10, marginBottom:15 }
+  container: { flex: 1, backgroundColor: '#121214', padding: 15 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#121214' },
+  text: { color: '#777', marginTop: 10 },
+  title: { color: '#fff', fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 15 },
+  subtitle: { color: '#aaa', fontSize: 12, fontWeight: 'bold', letterSpacing: 1 },
+  field: { flex: 1, backgroundColor: '#1c1c1e', padding: 10, borderRadius: 12, marginBottom: 15, borderTopWidth: 2, borderTopColor: '#ff4444' },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
+  emptyBox: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyText: { color: '#555', fontStyle: 'italic' },
+  card: { backgroundColor: '#252527', padding: 12, borderRadius: 8, marginBottom: 10, borderWidth: 1, borderColor: '#333' },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  cardName: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  removeBtn: { padding: 4, backgroundColor: '#330000', borderRadius: 4 },
+  hpInfo: { marginBottom: 10 },
+  hpBarBg: { height: 6, backgroundColor: '#111', borderRadius: 3, marginBottom: 4 },
+  hpBarFill: { height: 6, backgroundColor: '#ff4444', borderRadius: 3 },
+  hpText: { color: '#ccc', fontSize: 12, textAlign: 'right' },
+  controlsRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 5 },
+  ctrlBtn: { width: 36, height: 36, justifyContent: 'center', alignItems: 'center', borderRadius: 8, marginHorizontal: 4 },
+  ctrlText: { fontSize: 10, fontWeight: 'bold' },
+  passivesContainer: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 12, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#333' },
+  passiveBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, borderWidth: 1, marginRight: 6, marginBottom: 4, backgroundColor: 'rgba(0,0,0,0.3)' },
+  summonArea: { height: '30%', backgroundColor: '#18181b', padding: 10, borderRadius: 12, borderTopWidth: 2, borderTopColor: '#00B37E' },
+  summonRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#2a2a2d' },
+  iconBox: { width: 24, height: 24, backgroundColor: '#333', borderRadius: 12, justifyContent: 'center', alignItems: 'center' }
 });

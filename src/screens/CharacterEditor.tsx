@@ -5,8 +5,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system'; // Importação corrigida
-// Se o erro persistir na linha acima, o FileSystem.readAsStringAsync aceita string 'base64'
+import * as FileSystem from 'expo-file-system';
 import { decode } from 'base64-arraybuffer';
 import { supabase } from '../lib/supabase';
 import { GameCharacter, TeamMember, CharacterSkill, PartnerMember } from '../types/rpg';
@@ -46,10 +45,9 @@ export default function CharacterEditor({ visible, onClose, onSuccess, character
   const [uploadingImage, setUploadingImage] = useState(false);
 
   // ==================================================================================
-  // 2. STATES DE EQUIPE & PARCEIROS (Restaurados)
+  // 2. STATES DE EQUIPE & PARCEIROS
   // ==================================================================================
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [currentMemberIndex, setCurrentMemberIndex] = useState<number | null>(null);
   const [memberName, setMemberName] = useState('');
   const [memberHp, setMemberHp] = useState('');
 
@@ -69,14 +67,17 @@ export default function CharacterEditor({ visible, onClose, onSuccess, character
   const [editingPartnerSkillIndex, setEditingPartnerSkillIndex] = useState<number | null>(null);
 
   // ==================================================================================
-  // 3. STATES DE SKILLS (Restaurados)
+  // 3. STATES DE SKILLS (CORRIGIDO AQUI)
   // ==================================================================================
   const [tempSkills, setTempSkills] = useState<Partial<CharacterSkill>[]>([]);
   const [skillName, setSkillName] = useState('');
   const [skillDesc, setSkillDesc] = useState('');
   const [skillCost, setSkillCost] = useState('');
   const [skillDuration, setSkillDuration] = useState(''); 
-  const [skillType, setSkillType] = useState<'active' | 'passive' | 'transformation'>('active');
+  
+  // CORREÇÃO: Usar CharacterSkill['type'] permite 'active' | 'passive' | 'transformation' | 'summon'
+  const [skillType, setSkillType] = useState<CharacterSkill['type']>('active');
+  
   const [skillGeneratesShield, setSkillGeneratesShield] = useState(false);
   const [skillShieldValue, setSkillShieldValue] = useState('');
   const [skillIsHitBased, setSkillIsHitBased] = useState(false);
@@ -86,10 +87,6 @@ export default function CharacterEditor({ visible, onClose, onSuccess, character
   const [isSkillGeneral, setIsSkillGeneral] = useState(false);
   const [editingSkillIndex, setEditingSkillIndex] = useState<number | null>(null);
   const [skillUnlockLevel, setSkillUnlockLevel] = useState('1');
-
-  // Helpers de Cor
-  const getSubtypeLabel = (type?: string) => { switch(type) { case 'general': return 'GERAL'; case 'general_transformed': return 'GERAL (TRANSF)'; case 'transformed': return 'TRANSF.'; default: return 'INDIV.'; } };
-  const getSubtypeColor = (type?: string) => { switch(type) { case 'general': return '#00B37E'; case 'general_transformed': return '#FF4444'; case 'transformed': return '#ff8800'; default: return '#8257e5'; } };
 
   // ==================================================================================
   // 4. EFEITOS E CARREGAMENTO
@@ -174,7 +171,6 @@ export default function CharacterEditor({ visible, onClose, onSuccess, character
   const uploadToSupabase = async (uri: string): Promise<string | null> => {
     try {
       setUploadingImage(true);
-      // CORREÇÃO AQUI: EncodingType.Base64 estava dando erro. Usando string 'base64'.
       const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
       const arrayBuffer = decode(base64);
       const fileExt = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
@@ -264,7 +260,11 @@ export default function CharacterEditor({ visible, onClose, onSuccess, character
       const skill = tempSkills[index]; if (!skill) return;
       setSkillName(skill.name || ''); setSkillDesc(skill.description || ''); setSkillCost(skill.cost || '');
       setSkillDuration((skill.duration !== undefined && skill.duration !== -1) ? String(skill.duration) : '');
-      setSkillType(skill.type || 'active'); setSkillUnlockLevel(skill.unlock_level ? String(skill.unlock_level) : '1');
+      
+      // O estado aceita 'active' | 'passive' | 'transformation' | 'summon'
+      setSkillType(skill.type || 'active'); 
+      
+      setSkillUnlockLevel(skill.unlock_level ? String(skill.unlock_level) : '1');
       setSkillIsHitBased(skill.is_hit_based || false); setSkillHitValueInput(skill.hit_value ? String(skill.hit_value) : '');
       
       if (skill.shield_value && skill.shield_value > 0) { setSkillGeneratesShield(true); setSkillShieldValue(String(skill.shield_value)); } 
@@ -371,7 +371,6 @@ export default function CharacterEditor({ visible, onClose, onSuccess, character
         let charId = editingId;
         if(editingId) {
             await supabase.from('game_characters').update(charPayload).eq('id', editingId);
-            // Remove skills antigas e reinsere (estratégia simples)
             await supabase.from('character_skills').delete().eq('character_id', editingId);
         } else {
             const { data, error } = await supabase.from('game_characters').insert(charPayload).select().single();
